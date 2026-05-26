@@ -205,7 +205,7 @@ CREATE TABLE Booking (
     CONSTRAINT FK_Booking_OriginalBooking
         FOREIGN KEY (OriginalBookingID) REFERENCES Booking(BookingID),
     CONSTRAINT CK_Booking_Status
-        CHECK (BookingStatus IN ('Pending', 'Confirmed', 'Cancelled', 'Rescheduled', 'Completed')),
+        CHECK (BookingStatus IN ('Pending', 'Confirmed', 'Waitlisted', 'Cancelled', 'Rescheduled', 'Completed')),
     CONSTRAINT CK_Booking_TotalAmount
         CHECK (TotalAmount >= 0)
 );
@@ -1453,10 +1453,59 @@ VALUES
 (2, 4, 4, 5200.00, '2026-01-01', NULL),
 (2, 4, 5, 4600.00, '2026-01-01', NULL);
 
+/*
+    VoyageMealPackage: Voyage 1 is 2 days → all-inclusive (rule 2).
+    Voyage 2 is 8 days → all-inclusive (rule 2).
+*/
+INSERT INTO VoyageMealPackage (VoyageID, MealPackageRuleID)
+VALUES
+(1, 2),
+(2, 2);
+
 INSERT INTO BaggageRule (OperatorID, MaxWeightKG, EffectiveFrom, EffectiveTo)
 VALUES
 (1, 30.00, '2026-01-01', NULL),
 (2, 25.00, '2026-01-01', NULL);
+
+/*
+    Excursions are defined per port.
+    VoyageExcursion ties each excursion to a specific voyage stop (RoutePort).
+    RoutePortID reference: see RoutePort inserts above.
+      RoutePortID 2  = Singapore (Route 1, stop 2)
+      RoutePortID 4  = Langkawi  (Route 3, stop 2)
+      RoutePortID 5  = Phuket    (Route 3, stop 3)
+      RoutePortID 6  = Krabi     (Route 3, stop 4)
+*/
+INSERT INTO Excursion (PortID, ExcursionName, Description, DurationHours, Price)
+VALUES
+-- Singapore (PortID 2)
+(2, 'Gardens by the Bay Night Tour',   'Guided evening tour of the iconic garden domes.',  3.00,  85.00),
+(2, 'Sentosa Island Beach Day',        'Full-day beach and resort experience.',             8.00, 120.00),
+-- Langkawi (PortID 4)
+(4, 'Mangrove Kayak Adventure',        'Guided kayaking through Langkawi mangrove forests.', 4.00,  75.00),
+(4, 'Eagle Square & Cable Car Tour',   'Visit Eagle Square and ride the Langkawi cable car.', 5.00,  95.00),
+-- Phuket (PortID 5)
+(5, 'Phi Phi Island Snorkel Trip',     'Speedboat trip to Phi Phi Island with snorkelling.', 7.00, 110.00),
+(5, 'Old Phuket Town Heritage Walk',   'Walking tour through the historic Sino-Portuguese district.', 3.00,  50.00),
+-- Krabi (PortID 6)
+(6, 'Railay Beach Longtail Boat Trip', 'Longtail boat excursion to the secluded Railay Beach.', 5.00,  90.00),
+(6, 'Tiger Cave Temple Hike',          'Guided hike up 1,237 steps to the Tiger Cave Temple summit.', 4.00,  60.00);
+
+/*
+    VoyageExcursion: link excursions to Voyage 2 (Multi-destination, ShipID 1).
+    Voyage 2 stops at Langkawi (RoutePortID 8), Phuket (RoutePortID 9), Krabi (RoutePortID 10).
+*/
+INSERT INTO VoyageExcursion (VoyageID, RoutePortID, ExcursionID, AvailableSlots)
+VALUES
+-- Langkawi stop (RoutePortID 8, ExcursionID 3 & 4)
+(2, 8,  3, 30),
+(2, 8,  4, 40),
+-- Phuket stop (RoutePortID 9, ExcursionID 5 & 6)
+(2, 9,  5, 25),
+(2, 9,  6, 50),
+-- Krabi stop (RoutePortID 10, ExcursionID 7 & 8)
+(2, 10, 7, 35),
+(2, 10, 8, 45);
 
 INSERT INTO CancellationPolicy (OperatorID, HoursBeforeDeparture, PenaltyType, PenaltyValue)
 VALUES
