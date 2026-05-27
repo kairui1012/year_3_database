@@ -181,7 +181,9 @@ CREATE TABLE RoutePort (
 /*
  * CruiseVoyage
  * A specific scheduled sailing of a ship along a route.
- * VoyageLengthDays is a computed column (ArrivalDateTime - DepartureDateTime).
+ * 3NF fix: VoyageLengthDays removed — it was derived from DepartureDateTime
+ * and ArrivalDateTime (transitive dependency: VoyageID → Departure/Arrival → Length).
+ * Use vw_VoyageLength or DATEDIFF(ArrivalDateTime, DepartureDateTime) in queries.
  * BaggageWeightLimitKG enforces the per-passenger baggage limit for this voyage.
  */
 CREATE TABLE CruiseVoyage (
@@ -190,8 +192,8 @@ CREATE TABLE CruiseVoyage (
     RouteID               INT             NOT NULL,
     DepartureDateTime     DATETIME        NOT NULL,
     ArrivalDateTime       DATETIME        NOT NULL,
-    -- Computed: number of days between departure and arrival
-    VoyageLengthDays      INT             GENERATED ALWAYS AS (DATEDIFF(ArrivalDateTime, DepartureDateTime)) STORED,
+    -- VoyageLengthDays REMOVED (3NF: derived from DepartureDateTime & ArrivalDateTime).
+    -- Use: DATEDIFF(ArrivalDateTime, DepartureDateTime) or vw_VoyageLength.
     BaggageWeightLimitKG  DECIMAL(6,2)    NOT NULL,
     VoyageStatus          VARCHAR(30)     NOT NULL DEFAULT 'Scheduled',
     CONSTRAINT FK_CruiseVoyage_CruiseShip
@@ -244,18 +246,22 @@ CREATE TABLE AgeCategory (
 /*
  * Booking
  * A reservation made by a customer (CustomerPassengerID) for a voyage.
- * TotalAmount is the sum of all passenger fares within this booking.
+ * 3NF fix: TotalAmount removed — it was a stored aggregate (SUM of all
+ * BookingPassenger fares), making it transitively derived from child rows
+ * rather than a direct fact about the booking itself.
+ * Use vw_BookingTotal to obtain the booking total at query time.
  * OriginalBookingID self-references the booking replaced by a reschedule.
  */
 CREATE TABLE Booking (
-    BookingID            INT             AUTO_INCREMENT PRIMARY KEY,
-    BookingDate          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CustomerPassengerID  INT             NOT NULL,
-    VoyageID             INT             NOT NULL,
-    BookingStatus        VARCHAR(30)     NOT NULL DEFAULT 'Confirmed',
-    TotalAmount          DECIMAL(12,2)   NOT NULL DEFAULT 0,
+    BookingID            INT           AUTO_INCREMENT PRIMARY KEY,
+    BookingDate          DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CustomerPassengerID  INT           NOT NULL,
+    VoyageID             INT           NOT NULL,
+    BookingStatus        VARCHAR(30)   NOT NULL DEFAULT 'Confirmed',
+    -- TotalAmount REMOVED (3NF: derived aggregate of BookingPassenger.FinalFare).
+    -- Use: vw_BookingTotal to obtain the sum of passenger fares.
     -- NULL unless this booking replaced an earlier one via reschedule
-    OriginalBookingID    INT             NULL,
+    OriginalBookingID    INT           NULL,
     CONSTRAINT FK_Booking_CustomerPassenger
         FOREIGN KEY (CustomerPassengerID) REFERENCES Passenger(PassengerID),
     CONSTRAINT FK_Booking_CruiseVoyage
@@ -263,9 +269,7 @@ CREATE TABLE Booking (
     CONSTRAINT FK_Booking_OriginalBooking
         FOREIGN KEY (OriginalBookingID) REFERENCES Booking(BookingID),
     CONSTRAINT CK_Booking_Status
-        CHECK (BookingStatus IN ('Pending', 'Confirmed', 'Waitlisted', 'Cancelled', 'Rescheduled', 'Completed')),
-    CONSTRAINT CK_Booking_TotalAmount
-        CHECK (TotalAmount >= 0)
+        CHECK (BookingStatus IN ('Pending', 'Confirmed', 'Waitlisted', 'Cancelled', 'Rescheduled', 'Completed'))
 );
 
 /*
@@ -321,27 +325,26 @@ CREATE TABLE FareRule (
 /*
  * BookingPassenger
  * Links a specific passenger to a cabin within a booking.
- * FinalFare is automatically computed by the insert/update trigger:
- *   - Infant (SharedBed): 15% of adult base fare
- *   - Infant (Cot):       50% of child base fare
- *   - All others:         base fare from FareRule
- * DailySupervisionFee is set by the trigger when IsChaperonedYouth = TRUE.
+ * 3NF fix: FinalFare removed — transitively dependent via FareRuleID → FareRule.BaseFare.
+ * 3NF fix: DailySupervisionFee removed — redundant copy of SpecialService.Fee
+ *          for ServiceType = 'Chaperoned Youth' (transitive: IsChaperonedYouth → SpecialService.Fee).
+ * Use vw_PassengerFare to obtain computed FinalFare and DailySupervisionFee at query time.
+ * FareRuleID is retained as a FK reference for non-infant passengers.
  */
 CREATE TABLE BookingPassenger (
-    BookingPassengerID    INT            AUTO_INCREMENT PRIMARY KEY,
-    BookingID             INT            NOT NULL,
-    BookingCabinID        INT            NOT NULL,
-    PassengerID           INT            NOT NULL,
-    AgeCategoryID         INT            NOT NULL,
+    BookingPassengerID  INT          AUTO_INCREMENT PRIMARY KEY,
+    BookingID           INT          NOT NULL,
+    BookingCabinID      INT          NOT NULL,
+    PassengerID         INT          NOT NULL,
+    AgeCategoryID       INT          NOT NULL,
     -- NULL for infants (fare is derived, not from a FareRule row)
-    FareRuleID            INT            NULL,
+    FareRuleID          INT          NULL,
     -- 'SharedBed' or 'Cot' for infants; 'NotApplicable' for all others
-    InfantBedOption       VARCHAR(20)    NOT NULL DEFAULT 'NotApplicable',
-    IsChaperonedYouth     BOOLEAN        NOT NULL DEFAULT FALSE,
-    -- Set by trigger from SpecialService.Fee where ServiceType = 'Chaperoned Youth'
-    DailySupervisionFee   DECIMAL(10,2)  NOT NULL DEFAULT 0,
-    -- Computed and set by trigger on insert/update
-    FinalFare             DECIMAL(12,2)  NOT NULL DEFAULT 0,
+    InfantBedOption     VARCHAR(20)  NOT NULL DEFAULT 'NotApplicable',
+    IsChaperonedYouth   BOOLEAN      NOT NULL DEFAULT FALSE,
+    -- DailySupervisionFee REMOVED (3NF: redundant copy of SpecialService.Fee).
+    -- FinalFare REMOVED (3NF: transitively dependent via FareRuleID → FareRule.BaseFare).
+    -- Use vw_PassengerFare for both derived values.
     CONSTRAINT FK_BookingPassenger_Booking
         FOREIGN KEY (BookingID) REFERENCES Booking(BookingID),
     CONSTRAINT FK_BookingPassenger_BookingCabin
@@ -354,10 +357,6 @@ CREATE TABLE BookingPassenger (
         FOREIGN KEY (FareRuleID) REFERENCES FareRule(FareRuleID),
     CONSTRAINT CK_BookingPassenger_InfantBedOption
         CHECK (InfantBedOption IN ('SharedBed', 'Cot', 'NotApplicable')),
-    CONSTRAINT CK_BookingPassenger_DailySupervisionFee
-        CHECK (DailySupervisionFee >= 0),
-    CONSTRAINT CK_BookingPassenger_FinalFare
-        CHECK (FinalFare >= 0),
     -- A passenger can only appear once per booking
     CONSTRAINT UQ_BookingPassenger_Booking_Passenger
         UNIQUE (BookingID, PassengerID)
@@ -504,22 +503,24 @@ CREATE TABLE SpecialService (
 /*
  * PassengerSpecialService
  * Records a special service request for a specific booked passenger.
+ * 3NF fix: Fee removed — transitively dependent via ServiceID → SpecialService.Fee.
+ * SpecialService already holds the authoritative fee per service type.
+ * Join to SpecialService on ServiceID to retrieve the fee when needed.
  * One passenger cannot request the same service twice (UQ constraint).
  */
 CREATE TABLE PassengerSpecialService (
-    PassengerServiceID  INT            AUTO_INCREMENT PRIMARY KEY,
-    BookingPassengerID  INT            NOT NULL,
-    ServiceID           INT            NOT NULL,
-    RequestStatus       VARCHAR(30)    NOT NULL DEFAULT 'Requested',
-    Fee                 DECIMAL(10,2)  NOT NULL DEFAULT 0,
+    PassengerServiceID  INT          AUTO_INCREMENT PRIMARY KEY,
+    BookingPassengerID  INT          NOT NULL,
+    ServiceID           INT          NOT NULL,
+    RequestStatus       VARCHAR(30)  NOT NULL DEFAULT 'Requested',
+    -- Fee REMOVED (3NF: ServiceID → SpecialService.Fee is a transitive dependency).
+    -- JOIN to SpecialService on ServiceID to retrieve the current fee.
     CONSTRAINT FK_PassengerSpecialService_BookingPassenger
         FOREIGN KEY (BookingPassengerID) REFERENCES BookingPassenger(BookingPassengerID),
     CONSTRAINT FK_PassengerSpecialService_SpecialService
         FOREIGN KEY (ServiceID) REFERENCES SpecialService(ServiceID),
     CONSTRAINT CK_PassengerSpecialService_Status
         CHECK (RequestStatus IN ('Requested', 'Approved', 'Rejected', 'Completed', 'Cancelled')),
-    CONSTRAINT CK_PassengerSpecialService_Fee
-        CHECK (Fee >= 0),
     CONSTRAINT UQ_PassengerSpecialService_Passenger_Service
         UNIQUE (BookingPassengerID, ServiceID)
 );
@@ -546,15 +547,17 @@ CREATE TABLE BaggageRule (
 /*
  * BookingBaggage
  * Records the actual baggage weight declared for a booked passenger.
- * IsOverLimit and ExcessFee are set automatically by the insert/update trigger,
- * comparing WeightKG against the voyage's BaggageWeightLimitKG.
+ * 3NF fix: IsOverLimit removed — it is a derived Boolean fully determined by
+ * WeightKG vs. CruiseVoyage.BaggageWeightLimitKG (transitive dependency via join chain).
+ * Use vw_BaggageOverLimit to evaluate over-limit status at query time.
+ * ExcessFee is retained as it may be set independently by staff after inspection.
  */
 CREATE TABLE BookingBaggage (
     BaggageID           INT            AUTO_INCREMENT PRIMARY KEY,
     BookingPassengerID  INT            NOT NULL,
     WeightKG            DECIMAL(6,2)   NOT NULL,
-    -- Computed by trigger: TRUE if WeightKG exceeds voyage limit
-    IsOverLimit         BOOLEAN        NOT NULL DEFAULT FALSE,
+    -- IsOverLimit REMOVED (3NF: derived from WeightKG vs. CruiseVoyage.BaggageWeightLimitKG).
+    -- Use vw_BaggageOverLimit to compute: (WeightKG > BaggageWeightLimitKG).
     ExcessFee           DECIMAL(10,2)  NOT NULL DEFAULT 0,
     CONSTRAINT FK_BookingBaggage_BookingPassenger
         FOREIGN KEY (BookingPassengerID) REFERENCES BookingPassenger(BookingPassengerID),
@@ -766,6 +769,66 @@ BEGIN
     RETURN AgeValue;
 END$$
 
+/*
+ * fn_GetBookingTotal
+ * Computes the total fare for all passengers in a booking.
+ * Replaces the removed Booking.TotalAmount column (3NF fix).
+ * Applies the same infant pricing formula used in the BookingPassenger trigger:
+ *   - Infant SharedBed : 15% of the adult base fare for the same cabin category
+ *   - Infant Cot       : 50% of the child base fare for the same cabin category
+ *   - All others       : FareRule.BaseFare referenced by FareRuleID
+ * Used by the cancellation and reschedule triggers to calculate penalty amounts.
+ */
+CREATE FUNCTION fn_GetBookingTotal(p_BookingID INT)
+RETURNS DECIMAL(12,2)
+READS SQL DATA
+BEGIN
+    DECLARE v_Total DECIMAL(12,2) DEFAULT 0;
+
+    SELECT COALESCE(SUM(
+        CASE
+            WHEN ac.CategoryName = 'Infant' AND bp.InfantBedOption = 'SharedBed'
+                THEN (
+                    SELECT fr2.BaseFare * 0.15
+                    FROM   FareRule    fr2
+                    JOIN   AgeCategory ac2 ON ac2.AgeCategoryID  = fr2.AgeCategoryID
+                    JOIN   Booking     b2  ON b2.VoyageID        = fr2.VoyageID
+                                          AND b2.BookingID       = bp.BookingID
+                    JOIN   BookingCabin bc2 ON bc2.BookingID     = b2.BookingID
+                                           AND bc2.BookingCabinID = bp.BookingCabinID
+                    JOIN   Cabin       c2  ON c2.CabinID         = bc2.CabinID
+                                          AND c2.CabinCategoryID = fr2.CabinCategoryID
+                    WHERE  ac2.CategoryName = 'Adult'
+                    ORDER BY fr2.EffectiveFrom DESC
+                    LIMIT 1
+                )
+            WHEN ac.CategoryName = 'Infant' AND bp.InfantBedOption = 'Cot'
+                THEN (
+                    SELECT fr3.BaseFare * 0.50
+                    FROM   FareRule    fr3
+                    JOIN   AgeCategory ac3 ON ac3.AgeCategoryID  = fr3.AgeCategoryID
+                    JOIN   Booking     b3  ON b3.VoyageID        = fr3.VoyageID
+                                          AND b3.BookingID       = bp.BookingID
+                    JOIN   BookingCabin bc3 ON bc3.BookingID     = b3.BookingID
+                                           AND bc3.BookingCabinID = bp.BookingCabinID
+                    JOIN   Cabin       c3  ON c3.CabinID         = bc3.CabinID
+                                          AND c3.CabinCategoryID = fr3.CabinCategoryID
+                    WHERE  ac3.CategoryName = 'Child'
+                    ORDER BY fr3.EffectiveFrom DESC
+                    LIMIT 1
+                )
+            ELSE fr.BaseFare
+        END
+    ), 0)
+    INTO v_Total
+    FROM  BookingPassenger bp
+    JOIN  AgeCategory      ac ON ac.AgeCategoryID = bp.AgeCategoryID
+    LEFT JOIN FareRule     fr ON fr.FareRuleID    = bp.FareRuleID
+    WHERE bp.BookingID = p_BookingID;
+
+    RETURN v_Total;
+END$$
+
 /* ---------------------------------------------------------------
    Trigger: TR_Passenger_BI_ValidateDateOfBirth
    Purpose: Prevent a future date of birth from being inserted.
@@ -896,31 +959,28 @@ END$$
      4.  Enforce InfantBedOption rules (SharedBed/Cot for infants only).
      5.  Validate Chaperoned Youth eligibility (ages 15–17, operator must allow).
      6.  Require adult guardian in same or adjacent/connecting cabin for minors.
-     7.  Set DailySupervisionFee for Chaperoned Youth passengers.
-     8.  Calculate FinalFare:
-           - Infant SharedBed: 15% of adult base fare
-           - Infant Cot:       50% of child base fare
-           - All others:       base fare from matching FareRule
+     7.  Validate that a fare rule exists and assign FareRuleID (non-infants).
+         3NF: FinalFare and DailySupervisionFee are no longer stored here —
+         use vw_PassengerFare to retrieve computed fare values at query time.
    --------------------------------------------------------------- */
 CREATE TRIGGER TR_BookingPassenger_BI_ValidateRules
 BEFORE INSERT ON BookingPassenger
 FOR EACH ROW
 BEGIN
-    DECLARE CabinBookingID        INT;
-    DECLARE CabinMaxOccupancy     INT;
+    DECLARE CabinBookingID         INT;
+    DECLARE CabinMaxOccupancy      INT;
     DECLARE ExistingPassengerCount INT;
-    DECLARE PassengerAge          INT;
-    DECLARE CategoryMinAge        INT;
-    DECLARE CategoryMaxAge        INT;
-    DECLARE CategoryNameValue     VARCHAR(30);
-    DECLARE OperatorAllowsYouth   BOOLEAN;
-    DECLARE CabinIDValue          INT;
-    DECLARE FareRuleIDValue       INT;
-    DECLARE BaseFareValue         DECIMAL(12,2);
-    DECLARE AdultFareValue        DECIMAL(12,2);
-    DECLARE ChildFareValue        DECIMAL(12,2);
-    DECLARE HasAdultGuardian      INT DEFAULT 0;
-    DECLARE SupervisionFeeValue   DECIMAL(10,2);
+    DECLARE PassengerAge           INT;
+    DECLARE CategoryMinAge         INT;
+    DECLARE CategoryMaxAge         INT;
+    DECLARE CategoryNameValue      VARCHAR(30);
+    DECLARE OperatorAllowsYouth    BOOLEAN;
+    DECLARE CabinIDValue           INT;
+    DECLARE FareRuleIDValue        INT;
+    DECLARE BaseFareValue          DECIMAL(12,2);
+    DECLARE AdultFareValue         DECIMAL(12,2);
+    DECLARE ChildFareValue         DECIMAL(12,2);
+    DECLARE HasAdultGuardian       INT DEFAULT 0;
 
     -- Step 1: confirm the BookingCabin belongs to this booking
     SELECT bc.BookingID, c.MaxOccupancy, c.CabinID
@@ -959,11 +1019,11 @@ BEGIN
         CategoryNameValue,
         OperatorAllowsYouth
     FROM Passenger p
-    INNER JOIN Booking b       ON b.BookingID = NEW.BookingID
-    INNER JOIN CruiseVoyage v  ON b.VoyageID = v.VoyageID
-    INNER JOIN CruiseShip s    ON v.ShipID = s.ShipID
-    INNER JOIN CruiseOperator co ON s.OperatorID = co.OperatorID
-    INNER JOIN AgeCategory ac  ON ac.AgeCategoryID = NEW.AgeCategoryID
+    INNER JOIN Booking       b  ON b.BookingID    = NEW.BookingID
+    INNER JOIN CruiseVoyage  v  ON b.VoyageID     = v.VoyageID
+    INNER JOIN CruiseShip    s  ON v.ShipID       = s.ShipID
+    INNER JOIN CruiseOperator co ON s.OperatorID  = co.OperatorID
+    INNER JOIN AgeCategory   ac ON ac.AgeCategoryID = NEW.AgeCategoryID
     WHERE p.PassengerID = NEW.PassengerID;
 
     -- Business rule: age category must match actual passenger age at departure
@@ -973,20 +1033,17 @@ BEGIN
     END IF;
 
     -- Step 4: InfantBedOption validation
-    -- Business rule: infants must specify SharedBed or Cot
     IF CategoryNameValue = 'Infant' AND NEW.InfantBedOption NOT IN ('SharedBed', 'Cot') THEN
         SIGNAL SQLSTATE '45000'
             SET MESSAGE_TEXT = 'Infant passengers must have either SharedBed or Cot as InfantBedOption.';
     END IF;
 
-    -- Business rule: non-infants must have InfantBedOption = 'NotApplicable'
     IF CategoryNameValue <> 'Infant' AND NEW.InfantBedOption <> 'NotApplicable' THEN
         SIGNAL SQLSTATE '45000'
             SET MESSAGE_TEXT = 'InfantBedOption must be NotApplicable for non-infant passengers.';
     END IF;
 
     -- Step 5: Chaperoned Youth eligibility
-    -- Business rule: ages 15–17 only, operator must support the programme
     IF NEW.IsChaperonedYouth = TRUE
        AND (OperatorAllowsYouth = FALSE OR CategoryNameValue <> 'Teen' OR PassengerAge NOT BETWEEN 15 AND 17) THEN
         SIGNAL SQLSTATE '45000'
@@ -996,31 +1053,28 @@ BEGIN
     -- Step 6: adult guardian requirement for minors (age ≤ 17) not in the programme
     IF PassengerAge <= 17 AND NEW.IsChaperonedYouth = FALSE THEN
 
-        -- Check for an adult already assigned to the same cabin in this booking
         SELECT COUNT(*)
         INTO HasAdultGuardian
         FROM BookingPassenger bp
         INNER JOIN AgeCategory adult_ac ON bp.AgeCategoryID = adult_ac.AgeCategoryID
-        WHERE bp.BookingID = NEW.BookingID
-          AND adult_ac.MinAge >= 18
+        WHERE bp.BookingID      = NEW.BookingID
+          AND adult_ac.MinAge   >= 18
           AND bp.BookingCabinID = NEW.BookingCabinID;
 
-        -- If no adult in the same cabin, check for an adult in an adjacent/connecting cabin
-        -- Business rule: adult guardian in adjacent or connecting cabin is sufficient
         IF HasAdultGuardian = 0 THEN
             SELECT COUNT(*)
             INTO HasAdultGuardian
             FROM BookingPassenger   guardian_bp
-            INNER JOIN AgeCategory  guardian_ac ON guardian_bp.AgeCategoryID = guardian_ac.AgeCategoryID
-            INNER JOIN BookingCabin guardian_bc ON guardian_bp.BookingCabinID = guardian_bc.BookingCabinID
-            INNER JOIN Booking      guardian_b  ON guardian_bc.BookingID = guardian_b.BookingID
-            INNER JOIN BookingCabin teen_bc     ON teen_bc.BookingCabinID = NEW.BookingCabinID
-            INNER JOIN CabinAdjacency ca        ON ca.CabinID = teen_bc.CabinID
-                                               AND ca.AdjacentCabinID = guardian_bc.CabinID
-            INNER JOIN Booking      teen_b      ON teen_b.BookingID = NEW.BookingID
-            WHERE guardian_b.VoyageID = teen_b.VoyageID
-              AND guardian_b.BookingStatus IN ('Pending', 'Confirmed')
-              AND guardian_ac.MinAge >= 18;
+            INNER JOIN AgeCategory  guardian_ac ON guardian_bp.AgeCategoryID    = guardian_ac.AgeCategoryID
+            INNER JOIN BookingCabin guardian_bc ON guardian_bp.BookingCabinID   = guardian_bc.BookingCabinID
+            INNER JOIN Booking      guardian_b  ON guardian_bc.BookingID        = guardian_b.BookingID
+            INNER JOIN BookingCabin teen_bc     ON teen_bc.BookingCabinID       = NEW.BookingCabinID
+            INNER JOIN CabinAdjacency ca        ON ca.CabinID                  = teen_bc.CabinID
+                                               AND ca.AdjacentCabinID          = guardian_bc.CabinID
+            INNER JOIN Booking      teen_b      ON teen_b.BookingID             = NEW.BookingID
+            WHERE guardian_b.VoyageID       = teen_b.VoyageID
+              AND guardian_b.BookingStatus  IN ('Pending', 'Confirmed')
+              AND guardian_ac.MinAge        >= 18;
         END IF;
 
         IF HasAdultGuardian = 0 THEN
@@ -1029,32 +1083,22 @@ BEGIN
         END IF;
     END IF;
 
-    -- Step 7: set daily supervision fee for Chaperoned Youth passengers
-    IF NEW.IsChaperonedYouth = TRUE THEN
-        SELECT COALESCE(MAX(Fee), 0)
-        INTO SupervisionFeeValue
-        FROM SpecialService
-        WHERE ServiceType = 'Chaperoned Youth';
-
-        SET NEW.DailySupervisionFee = SupervisionFeeValue;
-    ELSE
-        SET NEW.DailySupervisionFee = 0;
-    END IF;
-
-    -- Step 8: compute FinalFare
+    -- Step 7: validate fare rule exists and assign FareRuleID
+    -- 3NF note: FinalFare and DailySupervisionFee are no longer stored.
+    -- This step only validates that the required fare rule exists and sets the FK reference.
     IF CategoryNameValue = 'Infant' THEN
-        -- Infant SharedBed: 15% of adult base fare
+        -- Validate adult fare rule exists (needed by vw_PassengerFare for SharedBed pricing)
         SELECT fr.BaseFare
         INTO AdultFareValue
         FROM FareRule fr
-        INNER JOIN Booking b     ON b.BookingID = NEW.BookingID
-        INNER JOIN BookingCabin bc ON bc.BookingCabinID = NEW.BookingCabinID
-        INNER JOIN Cabin c        ON c.CabinID = bc.CabinID
-        INNER JOIN AgeCategory ac ON ac.AgeCategoryID = fr.AgeCategoryID
-        WHERE fr.VoyageID = b.VoyageID
+        INNER JOIN Booking      b  ON b.BookingID        = NEW.BookingID
+        INNER JOIN BookingCabin bc ON bc.BookingCabinID  = NEW.BookingCabinID
+        INNER JOIN Cabin        c  ON c.CabinID          = bc.CabinID
+        INNER JOIN AgeCategory  ac ON ac.AgeCategoryID   = fr.AgeCategoryID
+        WHERE fr.VoyageID        = b.VoyageID
           AND fr.CabinCategoryID = c.CabinCategoryID
-          AND ac.CategoryName = 'Adult'
-          AND fr.EffectiveFrom <= DATE(b.BookingDate)
+          AND ac.CategoryName    = 'Adult'
+          AND fr.EffectiveFrom   <= DATE(b.BookingDate)
           AND (fr.EffectiveTo IS NULL OR fr.EffectiveTo >= DATE(b.BookingDate))
         ORDER BY fr.EffectiveFrom DESC
         LIMIT 1;
@@ -1064,18 +1108,18 @@ BEGIN
                 SET MESSAGE_TEXT = 'Adult fare rule is required to calculate SharedBed infant fare.';
         END IF;
 
-        -- Infant Cot: 50% of child base fare
+        -- Validate child fare rule exists (needed by vw_PassengerFare for Cot pricing)
         SELECT fr.BaseFare
         INTO ChildFareValue
         FROM FareRule fr
-        INNER JOIN Booking b     ON b.BookingID = NEW.BookingID
-        INNER JOIN BookingCabin bc ON bc.BookingCabinID = NEW.BookingCabinID
-        INNER JOIN Cabin c        ON c.CabinID = bc.CabinID
-        INNER JOIN AgeCategory ac ON ac.AgeCategoryID = fr.AgeCategoryID
-        WHERE fr.VoyageID = b.VoyageID
+        INNER JOIN Booking      b  ON b.BookingID        = NEW.BookingID
+        INNER JOIN BookingCabin bc ON bc.BookingCabinID  = NEW.BookingCabinID
+        INNER JOIN Cabin        c  ON c.CabinID          = bc.CabinID
+        INNER JOIN AgeCategory  ac ON ac.AgeCategoryID   = fr.AgeCategoryID
+        WHERE fr.VoyageID        = b.VoyageID
           AND fr.CabinCategoryID = c.CabinCategoryID
-          AND ac.CategoryName = 'Child'
-          AND fr.EffectiveFrom <= DATE(b.BookingDate)
+          AND ac.CategoryName    = 'Child'
+          AND fr.EffectiveFrom   <= DATE(b.BookingDate)
           AND (fr.EffectiveTo IS NULL OR fr.EffectiveTo >= DATE(b.BookingDate))
         ORDER BY fr.EffectiveFrom DESC
         LIMIT 1;
@@ -1086,23 +1130,19 @@ BEGIN
         END IF;
 
         SET NEW.FareRuleID = NULL;  -- infants have no direct FareRule row
-        SET NEW.FinalFare = CASE
-            WHEN NEW.InfantBedOption = 'SharedBed' THEN AdultFareValue * 0.15
-            ELSE ChildFareValue * 0.50
-        END;
 
     ELSE
-        -- Non-infant: look up the base fare from FareRule
+        -- Non-infant: validate fare rule and assign the FK reference
         SELECT fr.FareRuleID, fr.BaseFare
         INTO FareRuleIDValue, BaseFareValue
         FROM FareRule fr
-        INNER JOIN Booking b     ON b.BookingID = NEW.BookingID
-        INNER JOIN BookingCabin bc ON bc.BookingCabinID = NEW.BookingCabinID
-        INNER JOIN Cabin c        ON c.CabinID = bc.CabinID
-        WHERE fr.VoyageID = b.VoyageID
+        INNER JOIN Booking      b  ON b.BookingID        = NEW.BookingID
+        INNER JOIN BookingCabin bc ON bc.BookingCabinID  = NEW.BookingCabinID
+        INNER JOIN Cabin        c  ON c.CabinID          = bc.CabinID
+        WHERE fr.VoyageID        = b.VoyageID
           AND fr.CabinCategoryID = c.CabinCategoryID
-          AND fr.AgeCategoryID = NEW.AgeCategoryID
-          AND fr.EffectiveFrom <= DATE(b.BookingDate)
+          AND fr.AgeCategoryID   = NEW.AgeCategoryID
+          AND fr.EffectiveFrom   <= DATE(b.BookingDate)
           AND (fr.EffectiveTo IS NULL OR fr.EffectiveTo >= DATE(b.BookingDate))
         ORDER BY fr.EffectiveFrom DESC
         LIMIT 1;
@@ -1113,7 +1153,7 @@ BEGIN
         END IF;
 
         SET NEW.FareRuleID = FareRuleIDValue;
-        SET NEW.FinalFare  = BaseFareValue;
+        -- FinalFare NOT set here (3NF fix) — use vw_PassengerFare to retrieve it.
     END IF;
 END$$
 
@@ -1124,26 +1164,27 @@ END$$
             occupancy count (AND BookingPassengerID <> OLD.BookingPassengerID).
             Adjacent cabin check is omitted on update because the
             guardian relationship was already verified on insert.
+   3NF note: FinalFare and DailySupervisionFee are no longer stored —
+             use vw_PassengerFare to retrieve computed values.
    --------------------------------------------------------------- */
 CREATE TRIGGER TR_BookingPassenger_BU_ValidateRules
 BEFORE UPDATE ON BookingPassenger
 FOR EACH ROW
 BEGIN
-    DECLARE CabinBookingID        INT;
-    DECLARE CabinMaxOccupancy     INT;
+    DECLARE CabinBookingID         INT;
+    DECLARE CabinMaxOccupancy      INT;
     DECLARE ExistingPassengerCount INT;
-    DECLARE PassengerAge          INT;
-    DECLARE CategoryMinAge        INT;
-    DECLARE CategoryMaxAge        INT;
-    DECLARE CategoryNameValue     VARCHAR(30);
-    DECLARE OperatorAllowsYouth   BOOLEAN;
-    DECLARE CabinIDValue          INT;
-    DECLARE FareRuleIDValue       INT;
-    DECLARE BaseFareValue         DECIMAL(12,2);
-    DECLARE AdultFareValue        DECIMAL(12,2);
-    DECLARE ChildFareValue        DECIMAL(12,2);
-    DECLARE HasAdultGuardian      INT DEFAULT 0;
-    DECLARE SupervisionFeeValue   DECIMAL(10,2);
+    DECLARE PassengerAge           INT;
+    DECLARE CategoryMinAge         INT;
+    DECLARE CategoryMaxAge         INT;
+    DECLARE CategoryNameValue      VARCHAR(30);
+    DECLARE OperatorAllowsYouth    BOOLEAN;
+    DECLARE CabinIDValue           INT;
+    DECLARE FareRuleIDValue        INT;
+    DECLARE BaseFareValue          DECIMAL(12,2);
+    DECLARE AdultFareValue         DECIMAL(12,2);
+    DECLARE ChildFareValue         DECIMAL(12,2);
+    DECLARE HasAdultGuardian       INT DEFAULT 0;
 
     SELECT bc.BookingID, c.MaxOccupancy, c.CabinID
     INTO CabinBookingID, CabinMaxOccupancy, CabinIDValue
@@ -1160,7 +1201,7 @@ BEGIN
     SELECT COUNT(*)
     INTO ExistingPassengerCount
     FROM BookingPassenger
-    WHERE BookingCabinID = NEW.BookingCabinID
+    WHERE BookingCabinID      = NEW.BookingCabinID
       AND BookingPassengerID <> OLD.BookingPassengerID;
 
     IF ExistingPassengerCount + 1 > CabinMaxOccupancy OR ExistingPassengerCount + 1 > 5 THEN
@@ -1181,11 +1222,11 @@ BEGIN
         CategoryNameValue,
         OperatorAllowsYouth
     FROM Passenger p
-    INNER JOIN Booking b       ON b.BookingID = NEW.BookingID
-    INNER JOIN CruiseVoyage v  ON b.VoyageID = v.VoyageID
-    INNER JOIN CruiseShip s    ON v.ShipID = s.ShipID
-    INNER JOIN CruiseOperator co ON s.OperatorID = co.OperatorID
-    INNER JOIN AgeCategory ac  ON ac.AgeCategoryID = NEW.AgeCategoryID
+    INNER JOIN Booking        b  ON b.BookingID    = NEW.BookingID
+    INNER JOIN CruiseVoyage   v  ON b.VoyageID     = v.VoyageID
+    INNER JOIN CruiseShip     s  ON v.ShipID       = s.ShipID
+    INNER JOIN CruiseOperator co ON s.OperatorID   = co.OperatorID
+    INNER JOIN AgeCategory    ac ON ac.AgeCategoryID = NEW.AgeCategoryID
     WHERE p.PassengerID = NEW.PassengerID;
 
     IF PassengerAge < CategoryMinAge OR (CategoryMaxAge IS NOT NULL AND PassengerAge > CategoryMaxAge) THEN
@@ -1216,10 +1257,10 @@ BEGIN
         INTO HasAdultGuardian
         FROM BookingPassenger bp
         INNER JOIN AgeCategory adult_ac ON bp.AgeCategoryID = adult_ac.AgeCategoryID
-        WHERE bp.BookingID = NEW.BookingID
+        WHERE bp.BookingID          = NEW.BookingID
           AND bp.BookingPassengerID <> OLD.BookingPassengerID
-          AND adult_ac.MinAge >= 18
-          AND bp.BookingCabinID = NEW.BookingCabinID;
+          AND adult_ac.MinAge       >= 18
+          AND bp.BookingCabinID     = NEW.BookingCabinID;
 
         IF HasAdultGuardian = 0 THEN
             SIGNAL SQLSTATE '45000'
@@ -1227,29 +1268,20 @@ BEGIN
         END IF;
     END IF;
 
-    IF NEW.IsChaperonedYouth = TRUE THEN
-        SELECT COALESCE(MAX(Fee), 0)
-        INTO SupervisionFeeValue
-        FROM SpecialService
-        WHERE ServiceType = 'Chaperoned Youth';
-
-        SET NEW.DailySupervisionFee = SupervisionFeeValue;
-    ELSE
-        SET NEW.DailySupervisionFee = 0;
-    END IF;
-
+    -- Validate fare rule and update FareRuleID FK reference
+    -- 3NF note: FinalFare and DailySupervisionFee are not stored — use vw_PassengerFare.
     IF CategoryNameValue = 'Infant' THEN
         SELECT fr.BaseFare
         INTO AdultFareValue
         FROM FareRule fr
-        INNER JOIN Booking b      ON b.BookingID = NEW.BookingID
-        INNER JOIN BookingCabin bc ON bc.BookingCabinID = NEW.BookingCabinID
-        INNER JOIN Cabin c         ON c.CabinID = bc.CabinID
-        INNER JOIN AgeCategory ac  ON ac.AgeCategoryID = fr.AgeCategoryID
-        WHERE fr.VoyageID = b.VoyageID
+        INNER JOIN Booking      b  ON b.BookingID        = NEW.BookingID
+        INNER JOIN BookingCabin bc ON bc.BookingCabinID  = NEW.BookingCabinID
+        INNER JOIN Cabin        c  ON c.CabinID          = bc.CabinID
+        INNER JOIN AgeCategory  ac ON ac.AgeCategoryID   = fr.AgeCategoryID
+        WHERE fr.VoyageID        = b.VoyageID
           AND fr.CabinCategoryID = c.CabinCategoryID
-          AND ac.CategoryName = 'Adult'
-          AND fr.EffectiveFrom <= DATE(b.BookingDate)
+          AND ac.CategoryName    = 'Adult'
+          AND fr.EffectiveFrom   <= DATE(b.BookingDate)
           AND (fr.EffectiveTo IS NULL OR fr.EffectiveTo >= DATE(b.BookingDate))
         ORDER BY fr.EffectiveFrom DESC
         LIMIT 1;
@@ -1262,14 +1294,14 @@ BEGIN
         SELECT fr.BaseFare
         INTO ChildFareValue
         FROM FareRule fr
-        INNER JOIN Booking b      ON b.BookingID = NEW.BookingID
-        INNER JOIN BookingCabin bc ON bc.BookingCabinID = NEW.BookingCabinID
-        INNER JOIN Cabin c         ON c.CabinID = bc.CabinID
-        INNER JOIN AgeCategory ac  ON ac.AgeCategoryID = fr.AgeCategoryID
-        WHERE fr.VoyageID = b.VoyageID
+        INNER JOIN Booking      b  ON b.BookingID        = NEW.BookingID
+        INNER JOIN BookingCabin bc ON bc.BookingCabinID  = NEW.BookingCabinID
+        INNER JOIN Cabin        c  ON c.CabinID          = bc.CabinID
+        INNER JOIN AgeCategory  ac ON ac.AgeCategoryID   = fr.AgeCategoryID
+        WHERE fr.VoyageID        = b.VoyageID
           AND fr.CabinCategoryID = c.CabinCategoryID
-          AND ac.CategoryName = 'Child'
-          AND fr.EffectiveFrom <= DATE(b.BookingDate)
+          AND ac.CategoryName    = 'Child'
+          AND fr.EffectiveFrom   <= DATE(b.BookingDate)
           AND (fr.EffectiveTo IS NULL OR fr.EffectiveTo >= DATE(b.BookingDate))
         ORDER BY fr.EffectiveFrom DESC
         LIMIT 1;
@@ -1280,22 +1312,19 @@ BEGIN
         END IF;
 
         SET NEW.FareRuleID = NULL;
-        SET NEW.FinalFare = CASE
-            WHEN NEW.InfantBedOption = 'SharedBed' THEN AdultFareValue * 0.15
-            ELSE ChildFareValue * 0.50
-        END;
+        -- FinalFare NOT set here (3NF fix) — use vw_PassengerFare.
 
     ELSE
         SELECT fr.FareRuleID, fr.BaseFare
         INTO FareRuleIDValue, BaseFareValue
         FROM FareRule fr
-        INNER JOIN Booking b      ON b.BookingID = NEW.BookingID
-        INNER JOIN BookingCabin bc ON bc.BookingCabinID = NEW.BookingCabinID
-        INNER JOIN Cabin c         ON c.CabinID = bc.CabinID
-        WHERE fr.VoyageID = b.VoyageID
+        INNER JOIN Booking      b  ON b.BookingID        = NEW.BookingID
+        INNER JOIN BookingCabin bc ON bc.BookingCabinID  = NEW.BookingCabinID
+        INNER JOIN Cabin        c  ON c.CabinID          = bc.CabinID
+        WHERE fr.VoyageID        = b.VoyageID
           AND fr.CabinCategoryID = c.CabinCategoryID
-          AND fr.AgeCategoryID = NEW.AgeCategoryID
-          AND fr.EffectiveFrom <= DATE(b.BookingDate)
+          AND fr.AgeCategoryID   = NEW.AgeCategoryID
+          AND fr.EffectiveFrom   <= DATE(b.BookingDate)
           AND (fr.EffectiveTo IS NULL OR fr.EffectiveTo >= DATE(b.BookingDate))
         ORDER BY fr.EffectiveFrom DESC
         LIMIT 1;
@@ -1306,57 +1335,28 @@ BEGIN
         END IF;
 
         SET NEW.FareRuleID = FareRuleIDValue;
-        SET NEW.FinalFare  = BaseFareValue;
+        -- FinalFare NOT set here (3NF fix) — use vw_PassengerFare.
     END IF;
 END$$
 
 /* ---------------------------------------------------------------
-   Trigger: TR_BookingBaggage_BI_ValidateLimit
-   Purpose: Automatically set IsOverLimit by comparing the declared
-            baggage weight against the voyage's BaggageWeightLimitKG.
+   Triggers TR_BookingBaggage_BI_ValidateLimit and
+            TR_BookingBaggage_BU_ValidateLimit — REMOVED (3NF fix)
+   These triggers existed solely to set the IsOverLimit column, which
+   has been removed from BookingBaggage as a derived Boolean
+   (transitively determined by WeightKG vs. CruiseVoyage.BaggageWeightLimitKG).
+   Use vw_BaggageOverLimit to evaluate over-limit status at query time:
+     SELECT * FROM vw_BaggageOverLimit WHERE BookingPassengerID = ?;
    --------------------------------------------------------------- */
-CREATE TRIGGER TR_BookingBaggage_BI_ValidateLimit
-BEFORE INSERT ON BookingBaggage
-FOR EACH ROW
-BEGIN
-    DECLARE AllowedWeight DECIMAL(6,2);
-
-    SELECT v.BaggageWeightLimitKG
-    INTO AllowedWeight
-    FROM BookingPassenger bp
-    INNER JOIN Booking b       ON bp.BookingID = b.BookingID
-    INNER JOIN CruiseVoyage v  ON b.VoyageID = v.VoyageID
-    WHERE bp.BookingPassengerID = NEW.BookingPassengerID;
-
-    -- Business rule: flag baggage that exceeds the voyage weight limit
-    SET NEW.IsOverLimit = NEW.WeightKG > AllowedWeight;
-END$$
-
-/* ---------------------------------------------------------------
-   Trigger: TR_BookingBaggage_BU_ValidateLimit
-   Purpose: Re-evaluate IsOverLimit when baggage weight is updated.
-   --------------------------------------------------------------- */
-CREATE TRIGGER TR_BookingBaggage_BU_ValidateLimit
-BEFORE UPDATE ON BookingBaggage
-FOR EACH ROW
-BEGIN
-    DECLARE AllowedWeight DECIMAL(6,2);
-
-    SELECT v.BaggageWeightLimitKG
-    INTO AllowedWeight
-    FROM BookingPassenger bp
-    INNER JOIN Booking b       ON bp.BookingID = b.BookingID
-    INNER JOIN CruiseVoyage v  ON b.VoyageID = v.VoyageID
-    WHERE bp.BookingPassengerID = NEW.BookingPassengerID;
-
-    SET NEW.IsOverLimit = NEW.WeightKG > AllowedWeight;
-END$$
 
 /* ---------------------------------------------------------------
    Trigger: TR_BookingCancellation_BI_ApplyPenalty
    Purpose: Compute PenaltyAmount and RefundAmount based on the
             operator's CancellationPolicy and hours until departure.
    Business rule: cancellation < 48 hours before departure → full forfeit.
+   3NF note: BookingTotal previously read from Booking.TotalAmount (removed).
+             Now computed via fn_GetBookingTotal() which sums fare rules
+             for all passengers in the booking dynamically.
    --------------------------------------------------------------- */
 CREATE TRIGGER TR_BookingCancellation_BI_ApplyPenalty
 BEFORE INSERT ON BookingCancellation
@@ -1368,19 +1368,21 @@ BEGIN
     DECLARE PolicyPenaltyType   VARCHAR(30);
     DECLARE PolicyPenaltyValue  DECIMAL(10,2);
 
-    -- Find the most applicable cancellation policy (closest threshold not exceeded)
-    SELECT v.DepartureDateTime, b.TotalAmount, cp.PenaltyType, cp.PenaltyValue
-    INTO DepartureTime, BookingTotal, PolicyPenaltyType, PolicyPenaltyValue
+    -- Find departure time and the most applicable cancellation policy
+    SELECT v.DepartureDateTime, cp.PenaltyType, cp.PenaltyValue
+    INTO DepartureTime, PolicyPenaltyType, PolicyPenaltyValue
     FROM Booking b
     INNER JOIN CruiseVoyage v ON b.VoyageID = v.VoyageID
-    INNER JOIN CruiseShip s   ON v.ShipID = s.ShipID
+    INNER JOIN CruiseShip   s ON v.ShipID   = s.ShipID
     LEFT JOIN CancellationPolicy cp
-        ON s.OperatorID = cp.OperatorID
-       AND cp.HoursBeforeDeparture >= TIMESTAMPDIFF(HOUR, NEW.CancellationDateTime, v.DepartureDateTime)
+        ON  s.OperatorID = cp.OperatorID
+        AND cp.HoursBeforeDeparture >= TIMESTAMPDIFF(HOUR, NEW.CancellationDateTime, v.DepartureDateTime)
     WHERE b.BookingID = NEW.BookingID
     ORDER BY cp.HoursBeforeDeparture ASC
     LIMIT 1;
 
+    -- 3NF fix: compute booking total from passenger fare rules (replaces Booking.TotalAmount)
+    SET BookingTotal        = fn_GetBookingTotal(NEW.BookingID);
     SET HoursUntilDeparture = TIMESTAMPDIFF(HOUR, NEW.CancellationDateTime, DepartureTime);
 
     -- Business rule: < 48 hours + FullForfeit policy → zero refund
@@ -1418,6 +1420,8 @@ END$$
    Trigger: TR_BookingCancellation_BU_ApplyPenalty
    Purpose: Re-apply penalty calculation when a cancellation record
             is updated (e.g., correction of cancellation date/time).
+   3NF note: BookingTotal computed via fn_GetBookingTotal() —
+             Booking.TotalAmount has been removed (3NF fix).
    --------------------------------------------------------------- */
 CREATE TRIGGER TR_BookingCancellation_BU_ApplyPenalty
 BEFORE UPDATE ON BookingCancellation
@@ -1429,18 +1433,20 @@ BEGIN
     DECLARE PolicyPenaltyType   VARCHAR(30);
     DECLARE PolicyPenaltyValue  DECIMAL(10,2);
 
-    SELECT v.DepartureDateTime, b.TotalAmount, cp.PenaltyType, cp.PenaltyValue
-    INTO DepartureTime, BookingTotal, PolicyPenaltyType, PolicyPenaltyValue
+    SELECT v.DepartureDateTime, cp.PenaltyType, cp.PenaltyValue
+    INTO DepartureTime, PolicyPenaltyType, PolicyPenaltyValue
     FROM Booking b
     INNER JOIN CruiseVoyage v ON b.VoyageID = v.VoyageID
-    INNER JOIN CruiseShip s   ON v.ShipID = s.ShipID
+    INNER JOIN CruiseShip   s ON v.ShipID   = s.ShipID
     LEFT JOIN CancellationPolicy cp
-        ON s.OperatorID = cp.OperatorID
-       AND cp.HoursBeforeDeparture >= TIMESTAMPDIFF(HOUR, NEW.CancellationDateTime, v.DepartureDateTime)
+        ON  s.OperatorID = cp.OperatorID
+        AND cp.HoursBeforeDeparture >= TIMESTAMPDIFF(HOUR, NEW.CancellationDateTime, v.DepartureDateTime)
     WHERE b.BookingID = NEW.BookingID
     ORDER BY cp.HoursBeforeDeparture ASC
     LIMIT 1;
 
+    -- 3NF fix: compute booking total from passenger fare rules (replaces Booking.TotalAmount)
+    SET BookingTotal        = fn_GetBookingTotal(NEW.BookingID);
     SET HoursUntilDeparture = TIMESTAMPDIFF(HOUR, NEW.CancellationDateTime, DepartureTime);
 
     IF HoursUntilDeparture <= 48 AND PolicyPenaltyType = 'FullForfeit' THEN
@@ -1466,6 +1472,8 @@ END$$
      2. New voyage must begin within one year of the original booking date.
      3. Rescheduling < 48 hours before departure incurs a fee equal
         to the full booking total.
+   3NF note: OriginalTotal previously read from Booking.TotalAmount (removed).
+             Now computed via fn_GetBookingTotal() at runtime.
    --------------------------------------------------------------- */
 CREATE TRIGGER TR_RescheduleRequest_BI_ValidateRules
 BEFORE INSERT ON RescheduleRequest
@@ -1476,16 +1484,20 @@ BEGIN
     DECLARE NewDepartureTime      DATETIME;
     DECLARE OriginalTotal         DECIMAL(12,2);
 
-    SELECT b.BookingDate, v.DepartureDateTime, b.TotalAmount
-    INTO OriginalBookingDate, OriginalDepartureTime, OriginalTotal
-    FROM Booking b
+    -- 3NF fix: removed b.TotalAmount from SELECT — Booking.TotalAmount no longer exists.
+    SELECT b.BookingDate, v.DepartureDateTime
+    INTO   OriginalBookingDate, OriginalDepartureTime
+    FROM   Booking b
     INNER JOIN CruiseVoyage v ON b.VoyageID = v.VoyageID
-    WHERE b.BookingID = NEW.OriginalBookingID;
+    WHERE  b.BookingID = NEW.OriginalBookingID;
+
+    -- Compute booking total dynamically from passenger fare rules
+    SET OriginalTotal = fn_GetBookingTotal(NEW.OriginalBookingID);
 
     SELECT DepartureDateTime
-    INTO NewDepartureTime
-    FROM CruiseVoyage
-    WHERE VoyageID = NEW.NewVoyageID;
+    INTO   NewDepartureTime
+    FROM   CruiseVoyage
+    WHERE  VoyageID = NEW.NewVoyageID;
 
     -- Business rule: voyage must not have already departed
     IF NEW.RequestDateTime >= OriginalDepartureTime THEN
@@ -1508,6 +1520,8 @@ END$$
 /* ---------------------------------------------------------------
    Trigger: TR_RescheduleRequest_BU_ValidateRules
    Purpose: Re-apply the same reschedule validation rules on update.
+   3NF note: OriginalTotal computed via fn_GetBookingTotal() —
+             Booking.TotalAmount has been removed (3NF fix).
    --------------------------------------------------------------- */
 CREATE TRIGGER TR_RescheduleRequest_BU_ValidateRules
 BEFORE UPDATE ON RescheduleRequest
@@ -1518,16 +1532,20 @@ BEGIN
     DECLARE NewDepartureTime      DATETIME;
     DECLARE OriginalTotal         DECIMAL(12,2);
 
-    SELECT b.BookingDate, v.DepartureDateTime, b.TotalAmount
-    INTO OriginalBookingDate, OriginalDepartureTime, OriginalTotal
-    FROM Booking b
+    -- 3NF fix: removed b.TotalAmount from SELECT — Booking.TotalAmount no longer exists.
+    SELECT b.BookingDate, v.DepartureDateTime
+    INTO   OriginalBookingDate, OriginalDepartureTime
+    FROM   Booking b
     INNER JOIN CruiseVoyage v ON b.VoyageID = v.VoyageID
-    WHERE b.BookingID = NEW.OriginalBookingID;
+    WHERE  b.BookingID = NEW.OriginalBookingID;
+
+    -- Compute booking total dynamically from passenger fare rules
+    SET OriginalTotal = fn_GetBookingTotal(NEW.OriginalBookingID);
 
     SELECT DepartureDateTime
-    INTO NewDepartureTime
-    FROM CruiseVoyage
-    WHERE VoyageID = NEW.NewVoyageID;
+    INTO   NewDepartureTime
+    FROM   CruiseVoyage
+    WHERE  VoyageID = NEW.NewVoyageID;
 
     IF NEW.RequestDateTime >= OriginalDepartureTime THEN
         SIGNAL SQLSTATE '45000'
@@ -1840,13 +1858,163 @@ VALUES
 (2, 48, 'FullForfeit', 100.00);
 
 /* ============================================================
-   SECTION 10: REPORTING VIEWS
+   SECTION 10: VIEWS
+   ============================================================
+   This section contains two groups of views:
+     A. 3NF Companion Views — replace the six columns removed
+        during normalization; provide the same derived data
+        via computation rather than storage.
+     B. Reporting Views — flat, pre-joined views for queries
+        and reports (updated to use the companion views).
    ============================================================ */
+
+/* ------------------------------------------------------------
+   GROUP A: 3NF COMPANION VIEWS
+   ------------------------------------------------------------ */
+
+/*
+ * vw_VoyageLength
+ * Replaces CruiseVoyage.VoyageLengthDays (removed — derived column).
+ * Computes voyage duration on the fly using DATEDIFF.
+ * Also used by VoyageMealPackageRule lookups in application queries.
+ */
+CREATE VIEW vw_VoyageLength AS
+SELECT
+    VoyageID,
+    DepartureDateTime,
+    ArrivalDateTime,
+    DATEDIFF(ArrivalDateTime, DepartureDateTime) AS VoyageLengthDays
+FROM CruiseVoyage;
+
+/*
+ * vw_PassengerFare
+ * Replaces BookingPassenger.FinalFare and BookingPassenger.DailySupervisionFee
+ * (both removed — transitively dependent on FareRuleID and SpecialService.Fee).
+ *
+ * FinalFare logic:
+ *   Infant + SharedBed → 15% of adult base fare for same cabin category
+ *   Infant + Cot       → 50% of child base fare for same cabin category
+ *   All others         → FareRule.BaseFare referenced by FareRuleID
+ *
+ * DailySupervisionFee logic:
+ *   IsChaperonedYouth = TRUE  → current Fee from SpecialService (Chaperoned Youth)
+ *   Otherwise                 → 0.00
+ */
+CREATE VIEW vw_PassengerFare AS
+SELECT
+    bp.BookingPassengerID,
+    bp.BookingID,
+    bp.PassengerID,
+    bp.BookingCabinID,
+    bp.AgeCategoryID,
+    bp.FareRuleID,
+    bp.InfantBedOption,
+    bp.IsChaperonedYouth,
+    ac.CategoryName                                             AS AgeCategory,
+
+    -- DailySupervisionFee: looked up from SpecialService at query time
+    CASE
+        WHEN bp.IsChaperonedYouth = TRUE
+        THEN (
+            SELECT COALESCE(MAX(ss.Fee), 0)
+            FROM   SpecialService ss
+            WHERE  ss.ServiceType = 'Chaperoned Youth'
+        )
+        ELSE 0.00
+    END                                                         AS DailySupervisionFee,
+
+    -- FinalFare: computed from FareRule; infant pricing uses adult/child base fares
+    CASE
+        WHEN ac.CategoryName = 'Infant' AND bp.InfantBedOption = 'SharedBed'
+            THEN (
+                SELECT fr2.BaseFare * 0.15
+                FROM   FareRule    fr2
+                JOIN   AgeCategory ac2 ON ac2.AgeCategoryID   = fr2.AgeCategoryID
+                JOIN   Booking     b2  ON b2.VoyageID         = fr2.VoyageID
+                                      AND b2.BookingID        = bp.BookingID
+                JOIN   BookingCabin bc2 ON bc2.BookingID      = b2.BookingID
+                                       AND bc2.BookingCabinID = bp.BookingCabinID
+                JOIN   Cabin        c2  ON c2.CabinID         = bc2.CabinID
+                                      AND c2.CabinCategoryID  = fr2.CabinCategoryID
+                WHERE  ac2.CategoryName = 'Adult'
+                ORDER  BY fr2.EffectiveFrom DESC
+                LIMIT  1
+            )
+        WHEN ac.CategoryName = 'Infant' AND bp.InfantBedOption = 'Cot'
+            THEN (
+                SELECT fr3.BaseFare * 0.50
+                FROM   FareRule    fr3
+                JOIN   AgeCategory ac3 ON ac3.AgeCategoryID   = fr3.AgeCategoryID
+                JOIN   Booking     b3  ON b3.VoyageID         = fr3.VoyageID
+                                      AND b3.BookingID        = bp.BookingID
+                JOIN   BookingCabin bc3 ON bc3.BookingID      = b3.BookingID
+                                       AND bc3.BookingCabinID = bp.BookingCabinID
+                JOIN   Cabin        c3  ON c3.CabinID         = bc3.CabinID
+                                      AND c3.CabinCategoryID  = fr3.CabinCategoryID
+                WHERE  ac3.CategoryName = 'Child'
+                ORDER  BY fr3.EffectiveFrom DESC
+                LIMIT  1
+            )
+        ELSE fr.BaseFare
+    END                                                         AS FinalFare
+
+FROM  BookingPassenger bp
+JOIN  AgeCategory      ac ON ac.AgeCategoryID = bp.AgeCategoryID
+LEFT JOIN FareRule     fr ON fr.FareRuleID    = bp.FareRuleID;
+
+/*
+ * vw_BookingTotal
+ * Replaces Booking.TotalAmount (removed — stored aggregate of child rows).
+ * Computes total booking value by summing FinalFare for all passengers
+ * in the booking using vw_PassengerFare.
+ */
+CREATE VIEW vw_BookingTotal AS
+SELECT
+    b.BookingID,
+    b.BookingDate,
+    b.CustomerPassengerID,
+    b.VoyageID,
+    b.BookingStatus,
+    COALESCE(SUM(pf.FinalFare), 0.00) AS TotalAmount
+FROM  Booking          b
+LEFT JOIN vw_PassengerFare pf ON pf.BookingID = b.BookingID
+GROUP BY
+    b.BookingID,
+    b.BookingDate,
+    b.CustomerPassengerID,
+    b.VoyageID,
+    b.BookingStatus;
+
+/*
+ * vw_BaggageOverLimit
+ * Replaces BookingBaggage.IsOverLimit (removed — derived Boolean flag).
+ * Evaluates over-limit status by comparing WeightKG against the voyage's
+ * BaggageWeightLimitKG at query time via the join chain:
+ *   BookingBaggage → BookingPassenger → Booking → CruiseVoyage
+ */
+CREATE VIEW vw_BaggageOverLimit AS
+SELECT
+    bb.BaggageID,
+    bb.BookingPassengerID,
+    bb.WeightKG,
+    v.BaggageWeightLimitKG,
+    (bb.WeightKG > v.BaggageWeightLimitKG) AS IsOverLimit,
+    bb.ExcessFee
+FROM  BookingBaggage   bb
+JOIN  BookingPassenger bp ON bp.BookingPassengerID = bb.BookingPassengerID
+JOIN  Booking          b  ON b.BookingID           = bp.BookingID
+JOIN  CruiseVoyage     v  ON v.VoyageID            = b.VoyageID;
+
+/* ------------------------------------------------------------
+   GROUP B: REPORTING VIEWS
+   ------------------------------------------------------------ */
 
 /*
  * vw_BookingPassengerDetails
  * Flat view combining booking, voyage, cabin, passenger, and fare
  * information. Intended for reservation summary reports.
+ * Updated (3NF): FinalFare sourced from vw_PassengerFare instead of
+ * the removed BookingPassenger.FinalFare column.
  */
 CREATE VIEW vw_BookingPassengerDetails AS
 SELECT
@@ -1858,25 +2026,27 @@ SELECT
     r.RouteType,
     s.ShipName,
     c.CabinNumber,
-    cc.CategoryName                                                  AS CabinCategory,
+    cc.CategoryName                                               AS CabinCategory,
     p.PassengerID,
     p.FullName,
     p.PassportNo,
-    fn_CalculateAge(p.DateOfBirth, DATE(v.DepartureDateTime))        AS AgeAtDeparture,
-    ac.CategoryName                                                  AS AgeCategory,
+    fn_CalculateAge(p.DateOfBirth, DATE(v.DepartureDateTime))     AS AgeAtDeparture,
+    ac.CategoryName                                               AS AgeCategory,
     bp.InfantBedOption,
     bp.IsChaperonedYouth,
-    bp.FinalFare
-FROM BookingPassenger bp
-INNER JOIN Booking       b   ON bp.BookingID      = b.BookingID
-INNER JOIN CruiseVoyage  v   ON b.VoyageID        = v.VoyageID
-INNER JOIN CruiseRoute   r   ON v.RouteID         = r.RouteID
-INNER JOIN CruiseShip    s   ON v.ShipID          = s.ShipID
-INNER JOIN BookingCabin  bc  ON bp.BookingCabinID = bc.BookingCabinID
-INNER JOIN Cabin         c   ON bc.CabinID        = c.CabinID
-INNER JOIN CabinCategory cc  ON c.CabinCategoryID = cc.CabinCategoryID
-INNER JOIN Passenger     p   ON bp.PassengerID    = p.PassengerID
-INNER JOIN AgeCategory   ac  ON bp.AgeCategoryID  = ac.AgeCategoryID;
+    pf.DailySupervisionFee,
+    pf.FinalFare
+FROM  BookingPassenger  bp
+JOIN  vw_PassengerFare  pf  ON pf.BookingPassengerID = bp.BookingPassengerID
+JOIN  Booking           b   ON b.BookingID           = bp.BookingID
+JOIN  CruiseVoyage      v   ON v.VoyageID            = b.VoyageID
+JOIN  CruiseRoute       r   ON r.RouteID             = v.RouteID
+JOIN  CruiseShip        s   ON s.ShipID              = v.ShipID
+JOIN  BookingCabin      bc  ON bc.BookingCabinID     = bp.BookingCabinID
+JOIN  Cabin             c   ON c.CabinID             = bc.CabinID
+JOIN  CabinCategory     cc  ON cc.CabinCategoryID    = c.CabinCategoryID
+JOIN  Passenger         p   ON p.PassengerID         = bp.PassengerID
+JOIN  AgeCategory       ac  ON ac.AgeCategoryID      = bp.AgeCategoryID;
 
 /*
  * vw_VoyageCabinAvailability
@@ -1896,18 +2066,18 @@ SELECT
     CASE
         WHEN EXISTS (
             SELECT 1
-            FROM BookingCabin bc
-            INNER JOIN Booking b ON bc.BookingID = b.BookingID
-            WHERE b.VoyageID = v.VoyageID
-              AND bc.CabinID = c.CabinID
-              AND b.BookingStatus IN ('Pending', 'Confirmed')
+            FROM   BookingCabin bc
+            JOIN   Booking      b ON bc.BookingID = b.BookingID
+            WHERE  b.VoyageID        = v.VoyageID
+              AND  bc.CabinID        = c.CabinID
+              AND  b.BookingStatus  IN ('Pending', 'Confirmed')
         ) THEN 'Booked'
         ELSE 'Available'
     END AS AvailabilityStatus
-FROM CruiseVoyage   v
-INNER JOIN CruiseShip    s  ON v.ShipID          = s.ShipID
-INNER JOIN CruiseRoute   r  ON v.RouteID         = r.RouteID
-INNER JOIN Cabin         c  ON s.ShipID          = c.ShipID
-INNER JOIN CabinCategory cc ON c.CabinCategoryID = cc.CabinCategoryID;
+FROM  CruiseVoyage   v
+JOIN  CruiseShip     s  ON s.ShipID          = v.ShipID
+JOIN  CruiseRoute    r  ON r.RouteID         = v.RouteID
+JOIN  Cabin          c  ON c.ShipID          = s.ShipID
+JOIN  CabinCategory  cc ON cc.CabinCategoryID = c.CabinCategoryID;
 
 SELECT 'GLCL_DB MySQL database created successfully.' AS Message;
