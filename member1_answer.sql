@@ -272,21 +272,21 @@ LIMIT 1;
 -- -------------------------------------------------------
 SELECT
     COALESCE(ac.CategoryName, 'Grand Total') AS AgeCategory,
-    SUM(CASE WHEN ac.CategoryName = 'Infant' THEN 1 ELSE 0 END)  AS Infants,
-    SUM(CASE WHEN ac.CategoryName = 'Child'  THEN 1 ELSE 0 END)  AS Children,
-    SUM(CASE WHEN ac.CategoryName = 'Teen'   THEN 1 ELSE 0 END)  AS Teens,
-    SUM(CASE WHEN ac.CategoryName = 'Adult'  THEN 1 ELSE 0 END)  AS Adults,
-    SUM(CASE WHEN ac.CategoryName = 'Senior' THEN 1 ELSE 0 END)  AS Seniors,
-    COUNT(bp.BookingPassengerID)                                   AS TotalPassengers
+    SUM(CASE WHEN ac.CategoryName = 'Infant' THEN 1 ELSE 0 END) AS Infants,
+    SUM(CASE WHEN ac.CategoryName = 'Child'  THEN 1 ELSE 0 END) AS Children,
+    SUM(CASE WHEN ac.CategoryName = 'Teen'   THEN 1 ELSE 0 END) AS Teens,
+    SUM(CASE WHEN ac.CategoryName = 'Adult'  THEN 1 ELSE 0 END) AS Adults,
+    SUM(CASE WHEN ac.CategoryName = 'Senior' THEN 1 ELSE 0 END) AS Seniors,
+    COUNT(*) AS TotalPassengers
 FROM BookingPassenger bp
-INNER JOIN AgeCategory    ac ON bp.AgeCategoryID = ac.AgeCategoryID
-INNER JOIN Booking         b ON bp.BookingID     = b.BookingID
-INNER JOIN CruiseVoyage    v ON b.VoyageID       = v.VoyageID
-INNER JOIN CruiseShip      s ON v.ShipID         = s.ShipID
-INNER JOIN CruiseOperator  co ON s.OperatorID    = co.OperatorID
-WHERE v.VoyageID       = 1
-  AND co.OperatorName  = 'Global Luxury Cruise Lines'
-  AND b.BookingStatus  IN ('Confirmed', 'Completed')
+JOIN AgeCategory ac ON bp.AgeCategoryID = ac.AgeCategoryID
+JOIN Booking b ON bp.BookingID = b.BookingID
+JOIN CruiseVoyage v ON b.VoyageID = v.VoyageID
+JOIN CruiseShip s ON v.ShipID = s.ShipID
+JOIN CruiseOperator co ON s.OperatorID = co.OperatorID
+WHERE v.VoyageID = 1
+  AND co.OperatorName = 'Global Luxury Cruise Lines'
+  AND b.BookingStatus IN ('Confirmed', 'Completed')
 GROUP BY ac.CategoryName WITH ROLLUP;
 
 -- -------------------------------------------------------

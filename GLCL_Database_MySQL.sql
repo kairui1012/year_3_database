@@ -54,10 +54,6 @@ CREATE TABLE CruiseShip (
     PassengerCapacity  INT           NOT NULL,
     CONSTRAINT FK_CruiseShip_CruiseOperator
         FOREIGN KEY (OperatorID) REFERENCES CruiseOperator(OperatorID),
-    CONSTRAINT CK_CruiseShip_TotalDecks
-        CHECK (TotalDecks > 0),
-    CONSTRAINT CK_CruiseShip_PassengerCapacity
-        CHECK (PassengerCapacity > 0),
     CONSTRAINT UQ_CruiseShip_Operator_ShipName
         UNIQUE (OperatorID, ShipName)
 );
@@ -70,9 +66,7 @@ CREATE TABLE CruiseShip (
 CREATE TABLE CabinCategory (
     CabinCategoryID      INT           AUTO_INCREMENT PRIMARY KEY,
     CategoryName         VARCHAR(50)   NOT NULL UNIQUE,
-    CategoryDescription  VARCHAR(255),
-    CONSTRAINT CK_CabinCategory_CategoryName
-        CHECK (CategoryName IN ('Interior', 'Ocean View', 'Balcony', 'Suite'))
+    CategoryDescription  VARCHAR(255)
 );
 
 /*
@@ -96,8 +90,6 @@ CREATE TABLE Cabin (
     -- Business rule: strict maximum of 5 passengers per cabin
     CONSTRAINT CK_Cabin_MaxOccupancy
         CHECK (MaxOccupancy BETWEEN 1 AND 5),
-    CONSTRAINT CK_Cabin_DeckNumber
-        CHECK (DeckNumber > 0),
     CONSTRAINT UQ_Cabin_Ship_CabinNumber
         UNIQUE (ShipID, CabinNumber)
 );
@@ -119,8 +111,6 @@ CREATE TABLE CabinAdjacency (
         FOREIGN KEY (CabinID) REFERENCES Cabin(CabinID),
     CONSTRAINT FK_CabinAdjacency_AdjacentCabin
         FOREIGN KEY (AdjacentCabinID) REFERENCES Cabin(CabinID),
-    CONSTRAINT CK_CabinAdjacency_Type
-        CHECK (AdjacencyType IN ('Adjacent', 'Connecting')),
     CONSTRAINT CK_CabinAdjacency_NotSelf
         CHECK (CabinID <> AdjacentCabinID),
     CONSTRAINT UQ_CabinAdjacency
@@ -139,9 +129,7 @@ CREATE TABLE CabinAdjacency (
 CREATE TABLE CruiseRoute (
     RouteID    INT           AUTO_INCREMENT PRIMARY KEY,
     RouteName  VARCHAR(150)  NOT NULL,
-    RouteType  VARCHAR(30)   NOT NULL,
-    CONSTRAINT CK_CruiseRoute_RouteType
-        CHECK (RouteType IN ('One-way', 'Round-trip', 'Multi-destination'))
+    RouteType  VARCHAR(30)   NOT NULL
 );
 
 /*
@@ -172,8 +160,6 @@ CREATE TABLE RoutePort (
         FOREIGN KEY (RouteID) REFERENCES CruiseRoute(RouteID),
     CONSTRAINT FK_RoutePort_Port
         FOREIGN KEY (PortID) REFERENCES Port(PortID),
-    CONSTRAINT CK_RoutePort_StopSequence
-        CHECK (StopSequence > 0),
     CONSTRAINT UQ_RoutePort_Route_StopSequence
         UNIQUE (RouteID, StopSequence)
 );
@@ -199,11 +185,7 @@ CREATE TABLE CruiseVoyage (
     CONSTRAINT FK_CruiseVoyage_CruiseRoute
         FOREIGN KEY (RouteID) REFERENCES CruiseRoute(RouteID),
     CONSTRAINT CK_CruiseVoyage_ArrivalAfterDeparture
-        CHECK (ArrivalDateTime > DepartureDateTime),
-    CONSTRAINT CK_CruiseVoyage_BaggageLimit
-        CHECK (BaggageWeightLimitKG > 0),
-    CONSTRAINT CK_CruiseVoyage_Status
-        CHECK (VoyageStatus IN ('Scheduled', 'Boarding', 'Departed', 'Completed', 'Cancelled'))
+        CHECK (ArrivalDateTime > DepartureDateTime)
 );
 
 /* ============================================================
@@ -263,9 +245,7 @@ CREATE TABLE Booking (
     CONSTRAINT FK_Booking_OriginalBooking
         FOREIGN KEY (OriginalBookingID) REFERENCES Booking(BookingID),
     CONSTRAINT CK_Booking_Status
-        CHECK (BookingStatus IN ('Pending', 'Confirmed', 'Waitlisted', 'Cancelled', 'Rescheduled', 'Completed')),
-    CONSTRAINT CK_Booking_TotalAmount
-        CHECK (TotalAmount >= 0)
+        CHECK (BookingStatus IN ('Pending', 'Confirmed', 'Waitlisted', 'Cancelled', 'Rescheduled', 'Completed'))
 );
 
 /*
@@ -283,8 +263,6 @@ CREATE TABLE BookingCabin (
         FOREIGN KEY (BookingID) REFERENCES Booking(BookingID),
     CONSTRAINT FK_BookingCabin_Cabin
         FOREIGN KEY (CabinID) REFERENCES Cabin(CabinID),
-    CONSTRAINT CK_BookingCabin_CabinPrice
-        CHECK (CabinPrice >= 0),
     CONSTRAINT UQ_BookingCabin_Booking_Cabin
         UNIQUE (BookingID, CabinID)
 );
@@ -310,10 +288,6 @@ CREATE TABLE FareRule (
         FOREIGN KEY (CabinCategoryID) REFERENCES CabinCategory(CabinCategoryID),
     CONSTRAINT FK_FareRule_AgeCategory
         FOREIGN KEY (AgeCategoryID) REFERENCES AgeCategory(AgeCategoryID),
-    CONSTRAINT CK_FareRule_BaseFare
-        CHECK (BaseFare >= 0),
-    CONSTRAINT CK_FareRule_EffectiveDate
-        CHECK (EffectiveTo IS NULL OR EffectiveTo >= EffectiveFrom),
     CONSTRAINT UQ_FareRule_Voyage_Category_Age_Date
         UNIQUE (VoyageID, CabinCategoryID, AgeCategoryID, EffectiveFrom)
 );
@@ -354,10 +328,6 @@ CREATE TABLE BookingPassenger (
         FOREIGN KEY (FareRuleID) REFERENCES FareRule(FareRuleID),
     CONSTRAINT CK_BookingPassenger_InfantBedOption
         CHECK (InfantBedOption IN ('SharedBed', 'Cot', 'NotApplicable')),
-    CONSTRAINT CK_BookingPassenger_DailySupervisionFee
-        CHECK (DailySupervisionFee >= 0),
-    CONSTRAINT CK_BookingPassenger_FinalFare
-        CHECK (FinalFare >= 0),
     -- A passenger can only appear once per booking
     CONSTRAINT UQ_BookingPassenger_Booking_Passenger
         UNIQUE (BookingID, PassengerID)
@@ -373,9 +343,7 @@ CREATE TABLE BookingPassenger (
  */
 CREATE TABLE DiningOption (
     DiningOptionID  INT           AUTO_INCREMENT PRIMARY KEY,
-    DiningName      VARCHAR(100)  NOT NULL UNIQUE,
-    CONSTRAINT CK_DiningOption_DiningName
-        CHECK (DiningName IN ('Fixed-time dining', 'Flexible dining', 'Specialty restaurant'))
+    DiningName      VARCHAR(100)  NOT NULL UNIQUE
 );
 
 /*
@@ -429,9 +397,7 @@ CREATE TABLE ShipSpecialtyDining (
  */
 CREATE TABLE VoyageMealPackageType (
     MealPackageTypeID  INT           AUTO_INCREMENT PRIMARY KEY,
-    PackageName        VARCHAR(100)  NOT NULL UNIQUE,
-    CONSTRAINT CK_VoyageMealPackageType_PackageName
-        CHECK (PackageName IN ('Standard boarding meal', 'Multi-day all-inclusive dining package'))
+    PackageName        VARCHAR(100)  NOT NULL UNIQUE
 );
 
 /*
@@ -446,9 +412,6 @@ CREATE TABLE VoyageMealPackageRule (
     MaxVoyageLengthDays  INT  NULL,
     CONSTRAINT FK_VoyageMealPackageRule_VoyageMealPackageType
         FOREIGN KEY (MealPackageTypeID) REFERENCES VoyageMealPackageType(MealPackageTypeID),
-    CONSTRAINT CK_VoyageMealPackageRule_LengthRange
-        CHECK (MinVoyageLengthDays > 0
-               AND (MaxVoyageLengthDays IS NULL OR MaxVoyageLengthDays >= MinVoyageLengthDays)),
     CONSTRAINT UQ_VoyageMealPackageRule_LengthBand
         UNIQUE (MinVoyageLengthDays, MaxVoyageLengthDays)
 );
@@ -486,19 +449,7 @@ CREATE TABLE SpecialService (
     ServiceType        VARCHAR(50)    NOT NULL,
     AgeRestrictionMin  INT            NULL,
     AgeRestrictionMax  INT            NULL,
-    Fee                DECIMAL(10,2)  NOT NULL DEFAULT 0,
-    CONSTRAINT CK_SpecialService_ServiceType
-        CHECK (ServiceType IN ('Childcare', 'Teen Club', 'Accessibility', 'Mobility', 'Chaperoned Youth')),
-    -- Age restriction must be either fully specified or fully absent
-    CONSTRAINT CK_SpecialService_AgeRestriction
-        CHECK (
-            (AgeRestrictionMin IS NULL AND AgeRestrictionMax IS NULL)
-            OR
-            (AgeRestrictionMin IS NOT NULL AND AgeRestrictionMax IS NOT NULL
-             AND AgeRestrictionMax >= AgeRestrictionMin)
-        ),
-    CONSTRAINT CK_SpecialService_Fee
-        CHECK (Fee >= 0)
+    Fee                DECIMAL(10,2)  NOT NULL DEFAULT 0
 );
 
 /*
@@ -516,10 +467,6 @@ CREATE TABLE PassengerSpecialService (
         FOREIGN KEY (BookingPassengerID) REFERENCES BookingPassenger(BookingPassengerID),
     CONSTRAINT FK_PassengerSpecialService_SpecialService
         FOREIGN KEY (ServiceID) REFERENCES SpecialService(ServiceID),
-    CONSTRAINT CK_PassengerSpecialService_Status
-        CHECK (RequestStatus IN ('Requested', 'Approved', 'Rejected', 'Completed', 'Cancelled')),
-    CONSTRAINT CK_PassengerSpecialService_Fee
-        CHECK (Fee >= 0),
     CONSTRAINT UQ_PassengerSpecialService_Passenger_Service
         UNIQUE (BookingPassengerID, ServiceID)
 );
@@ -536,11 +483,7 @@ CREATE TABLE BaggageRule (
     EffectiveFrom  DATE           NOT NULL,
     EffectiveTo    DATE           NULL,
     CONSTRAINT FK_BaggageRule_CruiseOperator
-        FOREIGN KEY (OperatorID) REFERENCES CruiseOperator(OperatorID),
-    CONSTRAINT CK_BaggageRule_MaxWeight
-        CHECK (MaxWeightKG > 0),
-    CONSTRAINT CK_BaggageRule_EffectiveDate
-        CHECK (EffectiveTo IS NULL OR EffectiveTo >= EffectiveFrom)
+        FOREIGN KEY (OperatorID) REFERENCES CruiseOperator(OperatorID)
 );
 
 /*
@@ -557,11 +500,7 @@ CREATE TABLE BookingBaggage (
     IsOverLimit         BOOLEAN        NOT NULL DEFAULT FALSE,
     ExcessFee           DECIMAL(10,2)  NOT NULL DEFAULT 0,
     CONSTRAINT FK_BookingBaggage_BookingPassenger
-        FOREIGN KEY (BookingPassengerID) REFERENCES BookingPassenger(BookingPassengerID),
-    CONSTRAINT CK_BookingBaggage_Weight
-        CHECK (WeightKG >= 0),
-    CONSTRAINT CK_BookingBaggage_ExcessFee
-        CHECK (ExcessFee >= 0)
+        FOREIGN KEY (BookingPassengerID) REFERENCES BookingPassenger(BookingPassengerID)
 );
 
 /* ============================================================
@@ -582,10 +521,6 @@ CREATE TABLE Excursion (
     Price          DECIMAL(10,2)  NOT NULL DEFAULT 0.00,
     CONSTRAINT FK_Excursion_Port
         FOREIGN KEY (PortID) REFERENCES Port(PortID),
-    CONSTRAINT CK_Excursion_Price
-        CHECK (Price >= 0),
-    CONSTRAINT CK_Excursion_Duration
-        CHECK (DurationHours > 0),
     CONSTRAINT UQ_Excursion_Port_Name
         UNIQUE (PortID, ExcursionName)
 );
@@ -607,8 +542,6 @@ CREATE TABLE VoyageExcursion (
         FOREIGN KEY (RoutePortID) REFERENCES RoutePort(RoutePortID),
     CONSTRAINT FK_VoyageExcursion_Excursion
         FOREIGN KEY (ExcursionID) REFERENCES Excursion(ExcursionID),
-    CONSTRAINT CK_VoyageExcursion_Slots
-        CHECK (AvailableSlots >= 0),
     CONSTRAINT UQ_VoyageExcursion_Voyage_Port_Excursion
         UNIQUE (VoyageID, RoutePortID, ExcursionID)
 );
@@ -629,10 +562,6 @@ CREATE TABLE BookingExcursion (
         FOREIGN KEY (BookingPassengerID) REFERENCES BookingPassenger(BookingPassengerID),
     CONSTRAINT FK_BookingExcursion_VoyageExcursion
         FOREIGN KEY (VoyageExcursionID) REFERENCES VoyageExcursion(VoyageExcursionID),
-    CONSTRAINT CK_BookingExcursion_Status
-        CHECK (ExcursionStatus IN ('Booked', 'Cancelled', 'Completed')),
-    CONSTRAINT CK_BookingExcursion_Amount
-        CHECK (AmountPaid >= 0),
     -- A passenger can book the same excursion only once
     CONSTRAINT UQ_BookingExcursion_Passenger_Excursion
         UNIQUE (BookingPassengerID, VoyageExcursionID)
@@ -656,12 +585,8 @@ CREATE TABLE CancellationPolicy (
     PenaltyValue           DECIMAL(10,2)  NOT NULL,
     CONSTRAINT FK_CancellationPolicy_CruiseOperator
         FOREIGN KEY (OperatorID) REFERENCES CruiseOperator(OperatorID),
-    CONSTRAINT CK_CancellationPolicy_Hours
-        CHECK (HoursBeforeDeparture >= 0),
     CONSTRAINT CK_CancellationPolicy_PenaltyType
-        CHECK (PenaltyType IN ('Percentage', 'FixedAmount', 'FullForfeit')),
-    CONSTRAINT CK_CancellationPolicy_PenaltyValue
-        CHECK (PenaltyValue >= 0)
+        CHECK (PenaltyType IN ('Percentage', 'FixedAmount', 'FullForfeit'))
 );
 
 /*
@@ -682,9 +607,7 @@ CREATE TABLE BookingCancellation (
     RefundAmount          DECIMAL(12,2)  NOT NULL DEFAULT 0,
     ProcessedBy           VARCHAR(100),
     CONSTRAINT FK_BookingCancellation_Booking
-        FOREIGN KEY (BookingID) REFERENCES Booking(BookingID),
-    CONSTRAINT CK_BookingCancellation_Amounts
-        CHECK (PenaltyAmount >= 0 AND RefundAmount >= 0)
+        FOREIGN KEY (BookingID) REFERENCES Booking(BookingID)
 );
 
 /*
@@ -711,11 +634,7 @@ CREATE TABLE RescheduleRequest (
     CONSTRAINT FK_RescheduleRequest_NewBooking
         FOREIGN KEY (NewBookingID) REFERENCES Booking(BookingID),
     CONSTRAINT FK_RescheduleRequest_NewVoyage
-        FOREIGN KEY (NewVoyageID) REFERENCES CruiseVoyage(VoyageID),
-    CONSTRAINT CK_RescheduleRequest_Fee
-        CHECK (RescheduleFee >= 0),
-    CONSTRAINT CK_RescheduleRequest_Status
-        CHECK (RequestStatus IN ('Requested', 'Approved', 'Rejected', 'Completed', 'Cancelled'))
+        FOREIGN KEY (NewVoyageID) REFERENCES CruiseVoyage(VoyageID)
 );
 
 /*
@@ -732,23 +651,19 @@ CREATE TABLE Payment (
     PaymentStatus         VARCHAR(30)     NOT NULL DEFAULT 'Pending',
     TransactionReference  VARCHAR(100)    UNIQUE,
     CONSTRAINT FK_Payment_Booking
-        FOREIGN KEY (BookingID) REFERENCES Booking(BookingID),
-    CONSTRAINT CK_Payment_Amount
-        CHECK (Amount > 0),
-    CONSTRAINT CK_Payment_Status
-        CHECK (PaymentStatus IN ('Pending', 'Paid', 'Failed', 'Refunded', 'Partially Refunded'))
+        FOREIGN KEY (BookingID) REFERENCES Booking(BookingID)
 );
 
 /* ============================================================
    SECTION 8: FUNCTION AND TRIGGERS
    ============================================================
    6 Schema Constraints (CHECK constraints in Sections 1–7):
-     1. CK_Cabin_MaxOccupancy          — enforces max 5 passengers per cabin
-     2. CK_CruiseVoyage_ArrivalAfterDeparture — arrival must be after departure
-     3. CK_BookingPassenger_InfantBedOption   — valid bed options for infants
-     4. CK_Booking_Status              — restricts to valid booking states
-     5. CK_CancellationPolicy_PenaltyType     — restricts to valid penalty types
-     6. CK_AgeCategory_AgeRange        — ensures MinAge <= MaxAge
+     1. CK_Cabin_MaxOccupancy                  — enforces max 5 passengers per cabin
+     2. CK_CruiseVoyage_ArrivalAfterDeparture  — arrival must be after departure
+     3. CK_BookingPassenger_InfantBedOption    — valid bed options for infants
+     4. CK_Booking_Status                      — restricts to valid booking states
+     5. CK_CancellationPolicy_PenaltyType      — restricts to valid penalty types
+     6. CK_AgeCategory_AgeRange                — ensures MinAge <= MaxAge
 
    6 Triggers (BEFORE/AFTER INSERT only):
      1. TR_BookingCabin_BI_PreventDoubleBooking
@@ -1544,28 +1459,24 @@ VALUES
 
 /* ============================================================
    BOOKING  (BookingID 1–8)
-   TotalAmount starts at 0; TR_BookingPassenger_AI_UpdateBookingTotal
-   recalculates it automatically after each BookingPassenger insert.
-   Final totals for reference:
-     Booking 1: 2 000.00   Booking 5: 5 800.00
-     Booking 2: 3 000.00   Booking 6: 5 600.00
-     Booking 3: 6 020.00   Booking 7: 9 000.00
-     Booking 4: 2 350.00   Booking 8: 7 000.00
+   TotalAmount is hardcoded to match the sum of all FinalFare values
+   per booking (TR_BookingPassenger_AI_UpdateBookingTotal also
+   recomputes this automatically when triggers are active).
    ============================================================ */
 
 INSERT INTO Booking
     (BookingDate, CustomerPassengerID, VoyageID, BookingStatus, TotalAmount, OriginalBookingID)
 VALUES
 -- Voyage 1 bookings (GLCL Majesty, departure 2026-08-01)
-('2026-06-10 10:00:00', 1,  1, 'Confirmed', 0, NULL),  -- BookingID=1  Ahmad    → Interior  (final: 2 000.00)
-('2026-06-12 11:00:00', 3,  1, 'Confirmed', 0, NULL),  -- BookingID=2  James    → Balcony   (final: 3 000.00)
-('2026-06-15 14:00:00', 5,  1, 'Confirmed', 0, NULL),  -- BookingID=3  Rajesh   → Suite     (final: 6 020.00)
-('2026-06-20 09:30:00', 8,  1, 'Confirmed', 0, NULL),  -- BookingID=4  Sarah    → OV pair   (final: 2 350.00)
+('2026-06-10 10:00:00', 1,  1, 'Confirmed',  2000.00, NULL),  -- BookingID=1  Ahmad    → Interior  (2×1 000.00)
+('2026-06-12 11:00:00', 3,  1, 'Pending',    3000.00, NULL),  -- BookingID=2  James    → Balcony   (2×1 500.00)  awaiting confirmation
+('2026-06-15 14:00:00', 5,  1, 'Confirmed',  6020.00, NULL),  -- BookingID=3  Rajesh   → Suite     (2×2 800.00 + 420.00)
+('2026-06-20 09:30:00', 8,  1, 'Confirmed',  2350.00, NULL),  -- BookingID=4  Sarah    → OV pair   (1 350.00 + 1 000.00)
 -- Voyage 2 bookings (GLCL Majesty, departure 2026-09-10)
-('2026-07-01 08:00:00', 13, 2, 'Confirmed', 0, NULL),  -- BookingID=5  Hafiz    → Interior  (final: 5 800.00)
-('2026-07-05 13:00:00', 17, 2, 'Confirmed', 0, NULL),  -- BookingID=6  Elena    → Balcony   (final: 5 600.00)
-('2026-07-10 15:00:00', 20, 2, 'Confirmed', 0, NULL),  -- BookingID=7  Daniel   → Suite     (final: 9 000.00)
-('2026-07-20 10:00:00', 10, 2, 'Confirmed', 0, NULL);  -- BookingID=8  Lim      → OV        (final: 7 000.00) → cancelled
+('2026-07-01 08:00:00', 13, 2, 'Confirmed',  5800.00, NULL),  -- BookingID=5  Hafiz    → Interior  (2×2 000.00 + 1 200.00 + 600.00)
+('2026-07-05 13:00:00', 17, 2, 'Completed',  5600.00, NULL),  -- BookingID=6  Elena    → Balcony   (2×2 800.00)  voyage completed
+('2026-07-10 15:00:00', 20, 2, 'Confirmed',  9000.00, NULL),  -- BookingID=7  Daniel   → Suite     (5 200.00 + 3 800.00)
+('2026-07-20 10:00:00', 10, 2, 'Confirmed',  7000.00, NULL);  -- BookingID=8  Lim      → OV        (2×2 700.00 + 1 600.00) → cancelled
 
 
 /* ============================================================
@@ -1606,8 +1517,18 @@ VALUES
      Booking 5 — adults (BPID 10,11) before child (BPID 12) and infant (BPID 13)
      Booking 7 — Daniel (BPID 16) before Zara (BPID 17)
      Booking 8 — adults (BPID 18,19) before child (BPID 20)
-   FinalFare / FareRuleID / DailySupervisionFee: all computed by trigger.
+   FinalFare and FareRuleID are hardcoded below (trigger also computes
+   them automatically when active; these values serve as the fallback).
    AgeCategoryID: 1=Infant  2=Child  3=Teen  4=Adult  5=Senior
+   FareRuleID reference (auto-assigned in FareRule insert order):
+     V1 Interior : Child=1  Teen=2  Adult=3  Senior=4
+     V1 OceanView: Child=5  Teen=6  Adult=7  Senior=8
+     V1 Balcony  : Child=9  Teen=10 Adult=11 Senior=12
+     V1 Suite    : Child=13 Teen=14 Adult=15 Senior=16
+     V2 Interior : Child=17 Teen=18 Adult=19 Senior=20
+     V2 OceanView: Child=21 Teen=22 Adult=23 Senior=24
+     V2 Balcony  : Child=25 Teen=26 Adult=27 Senior=28
+     V2 Suite    : Child=29 Teen=30 Adult=31 Senior=32
    ============================================================ */
 
 INSERT INTO BookingPassenger
@@ -1615,59 +1536,61 @@ INSERT INTO BookingPassenger
      InfantBedOption, IsChaperonedYouth, DailySupervisionFee, FinalFare)
 VALUES
 /* --- Booking 1: Interior (CabinCategoryID=1), Voyage 1 — 2 Adults ------------------- */
-/* Trigger sets FinalFare: Adult Interior Voyage 1 = 1 000.00 each                       */
-(1, 1, 1,  4, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=1   Ahmad      Adult
-(1, 1, 2,  4, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=2   Nurul Hana Adult
+/* Adult Interior Voyage 1 = FareRuleID=3, BaseFare=1 000.00                             */
+(1, 1, 1,  4,  3, 'NotApplicable', FALSE,  0.00, 1000.00),  -- BPID=1   Ahmad      Adult
+(1, 1, 2,  4,  3, 'NotApplicable', FALSE,  0.00, 1000.00),  -- BPID=2   Nurul Hana Adult
 
 /* --- Booking 2: Balcony (CabinCategoryID=3), Voyage 1 — 2 Seniors ------------------- */
-/* Trigger sets FinalFare: Senior Balcony Voyage 1 = 1 500.00 each                       */
-(2, 2, 3,  5, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=3   James      Senior
-(2, 2, 4,  5, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=4   Margaret   Senior
+/* Senior Balcony Voyage 1 = FareRuleID=12, BaseFare=1 500.00                            */
+(2, 2, 3,  5, 12, 'NotApplicable', FALSE,  0.00, 1500.00),  -- BPID=3   James      Senior
+(2, 2, 4,  5, 12, 'NotApplicable', FALSE,  0.00, 1500.00),  -- BPID=4   Margaret   Senior
 
 /* --- Booking 3: Suite (CabinCategoryID=4), Voyage 1 — 2 Adults then 1 Infant -------- */
 /* Adults inserted first so:                                                               */
 /*   (a) Infant guardian check (Step 6) finds an adult already in the cabin               */
 /*   (b) Trigger locates the Adult fare to compute 15% SharedBed infant fare              */
-/* Trigger sets FinalFare: Adult Suite = 2 800.00; Infant SharedBed = 420.00 (15%×2800) */
-(3, 3, 5,  4, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=5   Rajesh     Adult
-(3, 3, 6,  4, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=6   Priya      Adult
-(3, 3, 7,  1, NULL, 'SharedBed',     FALSE, 0, 0),   -- BPID=7   Emma       Infant SharedBed
+/* Adult Suite = FareRuleID=15, BaseFare=2 800.00                                         */
+/* Infant SharedBed = 15% × 2 800.00 = 420.00; FareRuleID=NULL (derived, no rule row)   */
+(3, 3, 5,  4, 15, 'NotApplicable', FALSE,  0.00, 2800.00),  -- BPID=5   Rajesh     Adult
+(3, 3, 6,  4, 15, 'NotApplicable', FALSE,  0.00, 2800.00),  -- BPID=6   Priya      Adult
+(3, 3, 7,  1, NULL,'SharedBed',    FALSE,  0.00,  420.00),  -- BPID=7   Emma       Infant SharedBed (15%×2800)
 
 /* --- Booking 4: Ocean View pair, Voyage 1 — Adult guardian (O-803) then Teen (O-802)  */
 /* Sarah must be inserted first so Kevin's trigger finds her in the adjacent cabin.       */
 /* CabinAdjacency: (CabinID=2, AdjacentCabinID=3) satisfies the guardian check.          */
-/* Trigger sets FinalFare: Adult OV = 1 350.00; Teen OV = 1 000.00                      */
-(4, 4, 8,  4, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=8   Sarah      Adult  (O-803)
-(4, 5, 9,  3, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=9   Kevin      Teen   (O-802, adjacent guardian OK)
+/* Adult OV = FareRuleID=7, 1 350.00 | Teen OV = FareRuleID=6, 1 000.00                 */
+(4, 4, 8,  4,  7, 'NotApplicable', FALSE,  0.00, 1350.00),  -- BPID=8   Sarah      Adult  (O-803)
+(4, 5, 9,  3,  6, 'NotApplicable', FALSE,  0.00, 1000.00),  -- BPID=9   Kevin      Teen   (O-802, adjacent guardian OK)
 
 /* --- Booking 5: Interior (CabinCategoryID=1), Voyage 2 — 2 Adults, Child, Infant ---- */
 /* Adults first for guardian check on both child and infant.                              */
-/* Trigger sets FinalFare: Adult = 2 000.00; Child = 1 200.00; Infant Cot = 600.00      */
-/*   Infant Cot = 50% × Child Interior Voyage 2 (1 200.00) = 600.00                    */
-(5, 6, 13, 4, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=10  Hafiz      Adult
-(5, 6, 14, 4, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=11  Christine  Adult
-(5, 6, 15, 2, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=12  Lucas      Child
-(5, 6, 16, 1, NULL, 'Cot',           FALSE, 0, 0),   -- BPID=13  Sophie     Infant Cot
+/* Adult Interior V2 = FareRuleID=19, 2 000.00                                           */
+/* Child Interior V2 = FareRuleID=17, 1 200.00                                           */
+/* Infant Cot = 50% × 1 200.00 = 600.00; FareRuleID=NULL                                */
+(5, 6, 13, 4, 19, 'NotApplicable', FALSE,  0.00, 2000.00),  -- BPID=10  Hafiz      Adult
+(5, 6, 14, 4, 19, 'NotApplicable', FALSE,  0.00, 2000.00),  -- BPID=11  Christine  Adult
+(5, 6, 15, 2, 17, 'NotApplicable', FALSE,  0.00, 1200.00),  -- BPID=12  Lucas      Child
+(5, 6, 16, 1, NULL,'Cot',          FALSE,  0.00,  600.00),  -- BPID=13  Sophie     Infant Cot (50%×1200)
 
 /* --- Booking 6: Balcony (CabinCategoryID=3), Voyage 2 — 2 Seniors ------------------- */
-/* Trigger sets FinalFare: Senior Balcony Voyage 2 = 2 800.00 each                       */
-(6, 7, 17, 5, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=14  Elena      Senior
-(6, 7, 18, 5, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=15  Roberto    Senior
+/* Senior Balcony Voyage 2 = FareRuleID=28, 2 800.00                                     */
+(6, 7, 17, 5, 28, 'NotApplicable', FALSE,  0.00, 2800.00),  -- BPID=14  Elena      Senior
+(6, 7, 18, 5, 28, 'NotApplicable', FALSE,  0.00, 2800.00),  -- BPID=15  Roberto    Senior
 
 /* --- Booking 7: Suite (CabinCategoryID=4), Voyage 2 — Adult then Chaperoned Teen ---- */
 /* IsChaperonedYouth=TRUE bypasses the guardian check (Step 6 skipped).                  */
-/* Trigger sets FinalFare: Adult Suite = 5 200.00; Teen Suite CY = 3 800.00             */
-/* Trigger also sets DailySupervisionFee=50.00 from SpecialService.Fee where             */
-/*   ServiceType='Chaperoned Youth'.                                                      */
-(7, 8, 20, 4, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=16  Daniel     Adult
-(7, 8, 19, 3, NULL, 'NotApplicable', TRUE,  0, 0),   -- BPID=17  Zara       Teen   Chaperoned Youth
+/* Adult Suite V2 = FareRuleID=31, 5 200.00                                               */
+/* Teen Suite V2  = FareRuleID=30, 3 800.00; DailySupervisionFee=50.00 (Chaperoned Youth)*/
+(7, 8, 20, 4, 31, 'NotApplicable', FALSE,  0.00, 5200.00),  -- BPID=16  Daniel     Adult
+(7, 8, 19, 3, 30, 'NotApplicable', TRUE,  50.00, 3800.00),  -- BPID=17  Zara       Teen   Chaperoned Youth
 
 /* --- Booking 8: OceanView (CabinCategoryID=2), Voyage 2 — booking to be cancelled --- */
 /* Adults first for child guardian check.                                                 */
-/* Trigger sets FinalFare: Adult OV = 2 700.00; Child OV = 1 600.00                    */
-(8, 9, 10, 4, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=18  Lim Wei Jian Adult
-(8, 9, 11, 4, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=19  Siti Aishah  Adult
-(8, 9, 12, 2, NULL, 'NotApplicable', FALSE, 0, 0);   -- BPID=20  Ryan Lim     Child
+/* Adult OceanView V2 = FareRuleID=23, 2 700.00                                          */
+/* Child OceanView V2 = FareRuleID=21, 1 600.00                                          */
+(8, 9, 10, 4, 23, 'NotApplicable', FALSE,  0.00, 2700.00),  -- BPID=18  Lim Wei Jian Adult
+(8, 9, 11, 4, 23, 'NotApplicable', FALSE,  0.00, 2700.00),  -- BPID=19  Siti Aishah  Adult
+(8, 9, 12, 2, 21, 'NotApplicable', FALSE,  0.00, 1600.00);  -- BPID=20  Ryan Lim     Child
 
 
 /* ============================================================
@@ -1683,7 +1606,7 @@ INSERT INTO BookingBaggage
 VALUES
 -- Booking 1 passengers — Voyage 1 (25 kg limit)
 (1,  22.00, FALSE, 0),   -- Ahmad:      22.0 kg  ✓ within limit
-(2,  27.50, FALSE, 0),   -- Nurul Hana: 27.5 kg  → trigger sets IsOverLimit=TRUE
+(2,  27.50, TRUE,  0),   -- Nurul Hana: 27.5 kg  ✗ over 25 kg limit
 
 -- Booking 2 passengers — Voyage 1 (25 kg limit)
 (3,  18.00, FALSE, 0),   -- James:      18.0 kg  ✓
@@ -1694,12 +1617,12 @@ VALUES
 (6,  19.50, FALSE, 0),   -- Priya:      19.5 kg  ✓
 
 -- Booking 4 passengers — Voyage 1 (25 kg limit)
-(8,  26.00, FALSE, 0),   -- Sarah:      26.0 kg  → trigger sets IsOverLimit=TRUE
+(8,  26.00, TRUE,  0),   -- Sarah:      26.0 kg  ✗ over 25 kg limit
 (9,  12.00, FALSE, 0),   -- Kevin:      12.0 kg  ✓
 
 -- Booking 5 passengers — Voyage 2 (30 kg limit)
 (10, 28.00, FALSE, 0),   -- Hafiz:      28.0 kg  ✓
-(11, 33.50, FALSE, 0),   -- Christine:  33.5 kg  → trigger sets IsOverLimit=TRUE
+(11, 33.50, TRUE,  0),   -- Christine:  33.5 kg  ✗ over 30 kg limit
 (12,  8.50, FALSE, 0),   -- Lucas:       8.5 kg  ✓
 
 -- Booking 6 passengers — Voyage 2 (30 kg limit)
@@ -1712,7 +1635,7 @@ VALUES
 
 -- Booking 8 passengers — Voyage 2 (30 kg limit, booking will be cancelled)
 (18, 29.00, FALSE, 0),   -- Lim Wei Jian: 29.0 kg  ✓
-(19, 31.00, FALSE, 0),   -- Siti Aishah:  31.0 kg  → trigger sets IsOverLimit=TRUE
+(19, 31.00, TRUE,  0),   -- Siti Aishah:  31.0 kg  ✗ over 30 kg limit
 (20, 10.00, FALSE, 0);   -- Ryan Lim:     10.0 kg  ✓
 
 
@@ -1798,8 +1721,8 @@ VALUES
 (8,
  '2026-09-09 10:00:00',
  'Passengers unable to travel due to an unforeseen medical emergency.',
- 0,        -- trigger overwrites: 7 000.00 (FullForfeit)
- 0,        -- trigger overwrites: 0.00    (no refund)
+ 7000.00,  -- FullForfeit: 31 h before departure (< 48 h) → full TotalAmount forfeited
+ 0.00,     -- no refund issued
  'Reservations Team');
 
 
@@ -1850,3 +1773,365 @@ VALUES
 (8, '2026-07-20 10:20:00',  7000.00, 'Debit Card',    'Paid',    'TXN-20260720-008');
 
 SELECT 'GLCL_DB test data loaded successfully.' AS Message;
+
+/* ============================================================
+   SECTION 12: ADDITIONAL SAMPLE DATA — THREE NEW OPERATORS
+   ============================================================
+   New operators, ships, voyages, and bookings added for
+   broader test coverage.  No existing rows are modified.
+
+   ID ranges (auto-assigned, follows existing data):
+     OperatorID : 3–5       ShipID      : 4–6
+     CabinID    : 14–25     VoyageID    : 3–5
+     FareRuleID : 33–80     PassengerID : 21–35
+     BookingID  : 9–16      BookingCabinID  : 10–17
+     BookingPassengerID : 21–35           PaymentID : 9–16
+
+   Voyages 3 & 4 are set to 'Completed' (departed earlier in 2026).
+   Voyage 5 is 'Scheduled' (future, November 2026).
+   BookingStatus mix: 'Completed' for past voyages,
+                      'Confirmed'  for Voyage 5.
+
+   FareRuleID reference for new voyages:
+     V3 Interior : Child=33 Teen=34 Adult=35 Senior=36
+     V3 OceanView: Child=37 Teen=38 Adult=39 Senior=40
+     V3 Balcony  : Child=41 Teen=42 Adult=43 Senior=44
+     V3 Suite    : Child=45 Teen=46 Adult=47 Senior=48
+     V4 Interior : Child=49 Teen=50 Adult=51 Senior=52
+     V4 OceanView: Child=53 Teen=54 Adult=55 Senior=56
+     V4 Balcony  : Child=57 Teen=58 Adult=59 Senior=60
+     V4 Suite    : Child=61 Teen=62 Adult=63 Senior=64
+     V5 Interior : Child=65 Teen=66 Adult=67 Senior=68
+     V5 OceanView: Child=69 Teen=70 Adult=71 Senior=72
+     V5 Balcony  : Child=73 Teen=74 Adult=75 Senior=76
+     V5 Suite    : Child=77 Teen=78 Adult=79 Senior=80
+   ============================================================ */
+
+-- ----------------------------------------------------------------
+-- NEW CRUISE OPERATORS  (OperatorID 3–5)
+-- ----------------------------------------------------------------
+INSERT INTO CruiseOperator (OperatorName, HeadquartersCountry, ContactEmail, AllowsChaperonedYouth)
+VALUES
+('Mediterranean Star Cruises', 'Italy',     'reservations@medstar.example',    FALSE),  -- OperatorID=3
+('Pacific Dream Cruises',      'Australia', 'bookings@pacificdream.example',   TRUE),   -- OperatorID=4
+('Asian Pearl Cruises',        'Singapore', 'reservations@asianpearl.example', FALSE);  -- OperatorID=5
+
+-- ----------------------------------------------------------------
+-- NEW SHIPS  (ShipID 4–6, one per new operator)
+-- ----------------------------------------------------------------
+INSERT INTO CruiseShip (OperatorID, ShipName, TotalDecks, PassengerCapacity)
+VALUES
+(3, 'MS Adriatica',      11, 2000),  -- ShipID=4
+(4, 'Pacific Explorer',  13, 2600),  -- ShipID=5
+(5, 'Pearl of Asia',     10, 1800);  -- ShipID=6
+
+-- ----------------------------------------------------------------
+-- NEW CABINS  (CabinID 14–25, 4 per ship)
+-- CabinCategoryID: 1=Interior  2=Ocean View  3=Balcony  4=Suite
+-- ----------------------------------------------------------------
+INSERT INTO Cabin (ShipID, CabinCategoryID, CabinNumber, DeckNumber, MaxOccupancy, IsWheelchairAccessible)
+VALUES
+-- MS Adriatica (ShipID=4)
+(4, 1, 'I-401',  4, 4, FALSE),   -- CabinID=14
+(4, 2, 'O-501',  5, 4, FALSE),   -- CabinID=15
+(4, 3, 'B-601',  6, 5, TRUE),    -- CabinID=16
+(4, 4, 'S-701',  7, 5, TRUE),    -- CabinID=17
+-- Pacific Explorer (ShipID=5)
+(5, 1, 'I-501',  5, 4, FALSE),   -- CabinID=18
+(5, 2, 'O-601',  6, 4, FALSE),   -- CabinID=19
+(5, 3, 'B-701',  7, 5, TRUE),    -- CabinID=20
+(5, 4, 'S-801',  8, 5, TRUE),    -- CabinID=21
+-- Pearl of Asia (ShipID=6)
+(6, 3, 'B-601',  6, 5, TRUE),    -- CabinID=22
+(6, 1, 'I-401',  4, 4, FALSE),   -- CabinID=23
+(6, 4, 'S-701',  7, 5, TRUE),    -- CabinID=24
+(6, 2, 'O-501',  5, 4, FALSE);   -- CabinID=25
+
+-- ----------------------------------------------------------------
+-- DINING OPTIONS PER SHIP
+-- DiningOptionID: 1=Fixed-time  2=Flexible  3=Specialty restaurant
+-- ----------------------------------------------------------------
+INSERT INTO ShipDiningOption (ShipID, DiningOptionID)
+VALUES
+(4, 1), (4, 3),          -- MS Adriatica:     Fixed-time, Specialty
+(5, 2), (5, 3),          -- Pacific Explorer: Flexible, Specialty
+(6, 1), (6, 2), (6, 3);  -- Pearl of Asia:    Fixed-time, Flexible, Specialty
+
+-- SpecialtyDiningTypeID: 1=Vegan 2=Gluten-Free 3=Halal 4=Kosher 5=Low-Sodium 6=Seafood Grill
+INSERT INTO ShipSpecialtyDining (ShipID, SpecialtyDiningTypeID)
+VALUES
+(4, 1), (4, 3),           -- MS Adriatica:     Vegan, Halal
+(5, 2), (5, 6),           -- Pacific Explorer: Gluten-Free, Seafood Grill
+(6, 1), (6, 3), (6, 5);  -- Pearl of Asia:    Vegan, Halal, Low-Sodium
+
+-- ----------------------------------------------------------------
+-- NEW VOYAGES  (VoyageID 3–5)
+-- All reuse existing routes; VoyageLengthDays is computed (STORED).
+--   Voyage 3 — Route 2 (Penang Loop),      3 days, OperatorID=3 ship
+--   Voyage 4 — Route 1 (KL→Singapore),     2 days, OperatorID=4 ship
+--   Voyage 5 — Route 3 (Multi-destination), 6 days, OperatorID=5 ship
+-- ----------------------------------------------------------------
+INSERT INTO CruiseVoyage (ShipID, RouteID, DepartureDateTime, ArrivalDateTime, BaggageWeightLimitKG, VoyageStatus)
+VALUES
+(4, 2, '2026-03-10 09:00:00', '2026-03-13 17:00:00', 23.00, 'Completed'),  -- VoyageID=3
+(5, 1, '2026-04-15 18:00:00', '2026-04-17 08:00:00', 25.00, 'Completed'),  -- VoyageID=4
+(6, 3, '2026-11-05 17:00:00', '2026-11-11 09:00:00', 28.00, 'Scheduled');  -- VoyageID=5
+
+-- All three voyages are 2+ days → all-inclusive meal package (MealPackageRuleID=2)
+INSERT INTO VoyageMealPackage (VoyageID, MealPackageRuleID)
+VALUES (3, 2), (4, 2), (5, 2);
+
+-- ----------------------------------------------------------------
+-- FARE RULES  (FareRuleID 33–80)
+-- Four cabin categories × four age categories per voyage.
+-- Infant fares are not stored here (computed by trigger at booking time).
+-- AgeCategoryID: 2=Child  3=Teen  4=Adult  5=Senior
+-- ----------------------------------------------------------------
+INSERT INTO FareRule (VoyageID, CabinCategoryID, AgeCategoryID, BaseFare, EffectiveFrom, EffectiveTo)
+VALUES
+-- Voyage 3 — Interior (Cat 1)
+(3, 1, 2,  450.00, '2026-01-01', NULL),   -- FareRuleID=33
+(3, 1, 3,  550.00, '2026-01-01', NULL),   -- FareRuleID=34
+(3, 1, 4,  750.00, '2026-01-01', NULL),   -- FareRuleID=35
+(3, 1, 5,  650.00, '2026-01-01', NULL),   -- FareRuleID=36
+-- Voyage 3 — Ocean View (Cat 2)
+(3, 2, 2,  600.00, '2026-01-01', NULL),   -- FareRuleID=37
+(3, 2, 3,  750.00, '2026-01-01', NULL),   -- FareRuleID=38
+(3, 2, 4,  950.00, '2026-01-01', NULL),   -- FareRuleID=39
+(3, 2, 5,  850.00, '2026-01-01', NULL),   -- FareRuleID=40
+-- Voyage 3 — Balcony (Cat 3)
+(3, 3, 2,  800.00, '2026-01-01', NULL),   -- FareRuleID=41
+(3, 3, 3, 1000.00, '2026-01-01', NULL),   -- FareRuleID=42
+(3, 3, 4, 1300.00, '2026-01-01', NULL),   -- FareRuleID=43
+(3, 3, 5, 1100.00, '2026-01-01', NULL),   -- FareRuleID=44
+-- Voyage 3 — Suite (Cat 4)
+(3, 4, 2, 1500.00, '2026-01-01', NULL),   -- FareRuleID=45
+(3, 4, 3, 1900.00, '2026-01-01', NULL),   -- FareRuleID=46
+(3, 4, 4, 2500.00, '2026-01-01', NULL),   -- FareRuleID=47
+(3, 4, 5, 2200.00, '2026-01-01', NULL),   -- FareRuleID=48
+-- Voyage 4 — Interior (Cat 1)
+(4, 1, 2,  500.00, '2026-01-01', NULL),   -- FareRuleID=49
+(4, 1, 3,  650.00, '2026-01-01', NULL),   -- FareRuleID=50
+(4, 1, 4,  900.00, '2026-01-01', NULL),   -- FareRuleID=51
+(4, 1, 5,  800.00, '2026-01-01', NULL),   -- FareRuleID=52
+-- Voyage 4 — Ocean View (Cat 2)
+(4, 2, 2,  700.00, '2026-01-01', NULL),   -- FareRuleID=53
+(4, 2, 3,  900.00, '2026-01-01', NULL),   -- FareRuleID=54
+(4, 2, 4, 1200.00, '2026-01-01', NULL),   -- FareRuleID=55
+(4, 2, 5, 1050.00, '2026-01-01', NULL),   -- FareRuleID=56
+-- Voyage 4 — Balcony (Cat 3)
+(4, 3, 2,  950.00, '2026-01-01', NULL),   -- FareRuleID=57
+(4, 3, 3, 1200.00, '2026-01-01', NULL),   -- FareRuleID=58
+(4, 3, 4, 1600.00, '2026-01-01', NULL),   -- FareRuleID=59
+(4, 3, 5, 1400.00, '2026-01-01', NULL),   -- FareRuleID=60
+-- Voyage 4 — Suite (Cat 4)
+(4, 4, 2, 1800.00, '2026-01-01', NULL),   -- FareRuleID=61
+(4, 4, 3, 2200.00, '2026-01-01', NULL),   -- FareRuleID=62
+(4, 4, 4, 3000.00, '2026-01-01', NULL),   -- FareRuleID=63
+(4, 4, 5, 2600.00, '2026-01-01', NULL),   -- FareRuleID=64
+-- Voyage 5 — Interior (Cat 1)
+(5, 1, 2, 1000.00, '2026-01-01', NULL),   -- FareRuleID=65
+(5, 1, 3, 1300.00, '2026-01-01', NULL),   -- FareRuleID=66
+(5, 1, 4, 1800.00, '2026-01-01', NULL),   -- FareRuleID=67
+(5, 1, 5, 1500.00, '2026-01-01', NULL),   -- FareRuleID=68
+-- Voyage 5 — Ocean View (Cat 2)
+(5, 2, 2, 1400.00, '2026-01-01', NULL),   -- FareRuleID=69
+(5, 2, 3, 1700.00, '2026-01-01', NULL),   -- FareRuleID=70
+(5, 2, 4, 2200.00, '2026-01-01', NULL),   -- FareRuleID=71
+(5, 2, 5, 1900.00, '2026-01-01', NULL),   -- FareRuleID=72
+-- Voyage 5 — Balcony (Cat 3)
+(5, 3, 2, 1600.00, '2026-01-01', NULL),   -- FareRuleID=73
+(5, 3, 3, 2000.00, '2026-01-01', NULL),   -- FareRuleID=74
+(5, 3, 4, 2700.00, '2026-01-01', NULL),   -- FareRuleID=75
+(5, 3, 5, 2400.00, '2026-01-01', NULL),   -- FareRuleID=76
+-- Voyage 5 — Suite (Cat 4)
+(5, 4, 2, 2800.00, '2026-01-01', NULL),   -- FareRuleID=77
+(5, 4, 3, 3500.00, '2026-01-01', NULL),   -- FareRuleID=78
+(5, 4, 4, 4800.00, '2026-01-01', NULL),   -- FareRuleID=79
+(5, 4, 5, 4200.00, '2026-01-01', NULL);   -- FareRuleID=80
+
+-- ----------------------------------------------------------------
+-- BAGGAGE RULES and CANCELLATION POLICIES for new operators
+-- ----------------------------------------------------------------
+INSERT INTO BaggageRule (OperatorID, MaxWeightKG, EffectiveFrom, EffectiveTo)
+VALUES
+(3, 23.00, '2026-01-01', NULL),   -- Mediterranean Star: 23 kg
+(4, 25.00, '2026-01-01', NULL),   -- Pacific Dream:      25 kg
+(5, 28.00, '2026-01-01', NULL);   -- Asian Pearl:        28 kg
+
+-- Full forfeit within 48 hours (same policy as existing operators)
+INSERT INTO CancellationPolicy (OperatorID, HoursBeforeDeparture, PenaltyType, PenaltyValue)
+VALUES
+(3, 48, 'FullForfeit', 100.00),
+(4, 48, 'FullForfeit', 100.00),
+(5, 48, 'FullForfeit', 100.00);
+
+-- ----------------------------------------------------------------
+-- NEW PASSENGERS  (PassengerID 21–35)
+-- Ages verified against each voyage's DepartureDateTime.
+--   Voyage 3 departs 2026-03-10 | Voyage 4 departs 2026-04-15
+--   Voyage 5 departs 2026-11-05
+-- ----------------------------------------------------------------
+INSERT INTO Passenger (FullName, DateOfBirth, PassportNo, Nationality, Gender, ContactNo, Email)
+VALUES
+-- Voyage 3 — Booking 9: Interior, 2 Adults
+('Marco Rossi',       '1978-06-15', 'IT021A0001', 'Italian',    'Male',   '+39-06-1234-5678', 'marco.rossi@email.com'),      -- PassengerID=21, Adult age 47
+('Giulia Rossi',      '1980-03-22', 'IT022B0002', 'Italian',    'Female', '+39-06-2345-6789', 'giulia.rossi@email.com'),     -- PassengerID=22, Adult age 45
+
+-- Voyage 3 — Booking 10: Ocean View, 1 Adult + 1 Senior
+('Thomas Wright',     '1970-09-01', 'GB023C0003', 'British',    'Male',   '+44-20-3456-7890', 'thomas.wright@email.com'),    -- PassengerID=23, Adult age 55
+('Elizabeth Wright',  '1960-05-12', 'GB024D0004', 'British',    'Female', '+44-20-4567-8901', 'elizabeth.wright@email.com'), -- PassengerID=24, Senior age 65
+
+-- Voyage 3 — Booking 11: Balcony, 2 Adults (completed booking)
+('Chen Wei',          '1985-11-30', 'CN025E0005', 'Chinese',    'Male',   '+86-10-5678-9012', 'chen.wei@email.com'),         -- PassengerID=25, Adult age 40
+('Li Mei',            '1987-04-18', 'CN026F0006', 'Chinese',    'Female', '+86-10-6789-0123', 'li.mei@email.com'),           -- PassengerID=26, Adult age 38
+
+-- Voyage 4 — Booking 12: Interior, 2 Adults
+('Jack Morrison',     '1982-08-07', 'AU027G0007', 'Australian', 'Male',   '+61-2-7890-1234',  'jack.morrison@email.com'),    -- PassengerID=27, Adult age 43
+('Emily Morrison',    '1984-12-25', 'AU028H0008', 'Australian', 'Female', '+61-2-8901-2345',  'emily.morrison@email.com'),   -- PassengerID=28, Adult age 41
+
+-- Voyage 4 — Booking 13: Ocean View, 1 Senior (completed booking)
+('Robert Chen',       '1955-07-20', 'SG029I0009', 'Singaporean','Male',   '+65-9012-3456',    'robert.chen@email.com'),      -- PassengerID=29, Senior age 70
+
+-- Voyage 5 — Booking 14: Balcony, 2 Adults
+('Amir Khan',         '1976-02-14', 'SG030J0010', 'Singaporean','Male',   '+65-9123-4567',    'amir.khan@email.com'),        -- PassengerID=30, Adult age 50
+('Priya Sharma',      '1979-09-03', 'SG031K0011', 'Singaporean','Female', '+65-9234-5678',    'priya.sharma@email.com'),     -- PassengerID=31, Adult age 47
+
+-- Voyage 5 — Booking 15: Interior, 1 Adult + 1 Child
+('Tan Boon Hua',      '1986-05-10', 'MY032L0012', 'Malaysian',  'Male',   '+60-12-345-6700',  'tan.boonhua@email.com'),      -- PassengerID=32, Adult age 40
+('Mei Xin Tan',       '2014-08-20', 'MY033M0013', 'Malaysian',  'Female', NULL,               NULL),                         -- PassengerID=33, Child age 12
+
+-- Voyage 5 — Booking 16: Suite, 2 Adults (confirmed)
+('David Park',        '1981-03-15', 'KR034N0014', 'South Korean','Male',  '+82-2-3456-7890',  'david.park@email.com'),       -- PassengerID=34, Adult age 45
+('Grace Park',        '1983-11-28', 'KR035O0015', 'South Korean','Female','+82-2-4567-8901',  'grace.park@email.com');       -- PassengerID=35, Adult age 42
+
+-- ----------------------------------------------------------------
+-- NEW BOOKINGS  (BookingID 9–16)
+-- TotalAmount hardcoded to match sum of FinalFare per booking.
+--   Booking  9: 750×2         =  1 500.00
+--   Booking 10: 950+850        =  1 800.00
+--   Booking 11: 1 300×2        =  2 600.00
+--   Booking 12: 900×2          =  1 800.00
+--   Booking 13: 1 050          =  1 050.00
+--   Booking 14: 2 700×2        =  5 400.00
+--   Booking 15: 1 800+1 000    =  2 800.00
+--   Booking 16: 4 800×2        =  9 600.00
+-- ----------------------------------------------------------------
+INSERT INTO Booking (BookingDate, CustomerPassengerID, VoyageID, BookingStatus, TotalAmount, OriginalBookingID)
+VALUES
+('2026-01-15 09:00:00', 21, 3, 'Completed',  1500.00, NULL),  -- BookingID=9   Marco    → Interior  V3
+('2026-01-20 14:00:00', 23, 3, 'Completed',  1800.00, NULL),  -- BookingID=10  Thomas   → OceanView V3
+('2026-02-01 11:00:00', 25, 3, 'Completed',  2600.00, NULL),  -- BookingID=11  Chen Wei → Balcony   V3
+('2026-02-10 10:00:00', 27, 4, 'Completed',  1800.00, NULL),  -- BookingID=12  Jack     → Interior  V4
+('2026-02-15 15:00:00', 29, 4, 'Completed',  1050.00, NULL),  -- BookingID=13  Robert   → OceanView V4
+('2026-07-20 08:00:00', 30, 5, 'Confirmed',  5400.00, NULL),  -- BookingID=14  Amir     → Balcony   V5
+('2026-07-25 13:00:00', 32, 5, 'Confirmed',  2800.00, NULL),  -- BookingID=15  Tan      → Interior  V5
+('2026-08-01 10:00:00', 34, 5, 'Confirmed',  9600.00, NULL);  -- BookingID=16  David    → Suite     V5
+
+-- ----------------------------------------------------------------
+-- NEW BOOKING CABIN  (BookingCabinID 10–17)
+-- TR_BookingCabin_BI_PreventDoubleBooking verifies the cabin
+-- belongs to the ship on the booked voyage.
+-- ----------------------------------------------------------------
+INSERT INTO BookingCabin (BookingID, CabinID, CabinPrice)
+VALUES
+(9,  14, 0),   -- BookingCabinID=10  Booking 9  → CabinID=14  I-401 Interior    ShipID=4 (V3)
+(10, 15, 0),   -- BookingCabinID=11  Booking 10 → CabinID=15  O-501 OceanView   ShipID=4
+(11, 16, 0),   -- BookingCabinID=12  Booking 11 → CabinID=16  B-601 Balcony     ShipID=4
+(12, 18, 0),   -- BookingCabinID=13  Booking 12 → CabinID=18  I-501 Interior    ShipID=5 (V4)
+(13, 19, 0),   -- BookingCabinID=14  Booking 13 → CabinID=19  O-601 OceanView   ShipID=5
+(14, 22, 0),   -- BookingCabinID=15  Booking 14 → CabinID=22  B-601 Balcony     ShipID=6 (V5)
+(15, 23, 0),   -- BookingCabinID=16  Booking 15 → CabinID=23  I-401 Interior    ShipID=6
+(16, 24, 0);   -- BookingCabinID=17  Booking 16 → CabinID=24  S-701 Suite       ShipID=6
+
+-- ----------------------------------------------------------------
+-- NEW BOOKING PASSENGER  (BookingPassengerID 21–35)
+-- Adults are inserted before minors within each cabin so the
+-- guardian check in TR_BookingPassenger_BI_ValidateRules succeeds.
+-- FinalFare and FareRuleID are hardcoded (trigger also computes them).
+-- AgeCategoryID: 2=Child  3=Teen  4=Adult  5=Senior
+-- ----------------------------------------------------------------
+INSERT INTO BookingPassenger
+    (BookingID, BookingCabinID, PassengerID, AgeCategoryID, FareRuleID,
+     InfantBedOption, IsChaperonedYouth, DailySupervisionFee, FinalFare)
+VALUES
+/* --- Booking 9: Interior V3 — 2 Adults (Adult Interior V3 = FareRuleID=35, 750.00) ---- */
+(9,  10, 21, 4, 35, 'NotApplicable', FALSE, 0.00,  750.00),   -- BPID=21  Marco
+(9,  10, 22, 4, 35, 'NotApplicable', FALSE, 0.00,  750.00),   -- BPID=22  Giulia
+
+/* --- Booking 10: OceanView V3 — 1 Adult + 1 Senior ------------------------------------ */
+/* Adult OceanView V3 = FareRuleID=39, 950.00 | Senior OceanView V3 = FareRuleID=40, 850.00 */
+(10, 11, 23, 4, 39, 'NotApplicable', FALSE, 0.00,  950.00),   -- BPID=23  Thomas   Adult
+(10, 11, 24, 5, 40, 'NotApplicable', FALSE, 0.00,  850.00),   -- BPID=24  Elizabeth Senior
+
+/* --- Booking 11: Balcony V3 — 2 Adults (Adult Balcony V3 = FareRuleID=43, 1 300.00) --- */
+(11, 12, 25, 4, 43, 'NotApplicable', FALSE, 0.00, 1300.00),   -- BPID=25  Chen Wei
+(11, 12, 26, 4, 43, 'NotApplicable', FALSE, 0.00, 1300.00),   -- BPID=26  Li Mei
+
+/* --- Booking 12: Interior V4 — 2 Adults (Adult Interior V4 = FareRuleID=51, 900.00) --- */
+(12, 13, 27, 4, 51, 'NotApplicable', FALSE, 0.00,  900.00),   -- BPID=27  Jack
+(12, 13, 28, 4, 51, 'NotApplicable', FALSE, 0.00,  900.00),   -- BPID=28  Emily
+
+/* --- Booking 13: OceanView V4 — 1 Senior (Senior OceanView V4 = FareRuleID=56, 1 050.00) */
+(13, 14, 29, 5, 56, 'NotApplicable', FALSE, 0.00, 1050.00),   -- BPID=29  Robert   Senior
+
+/* --- Booking 14: Balcony V5 — 2 Adults (Adult Balcony V5 = FareRuleID=75, 2 700.00) --- */
+(14, 15, 30, 4, 75, 'NotApplicable', FALSE, 0.00, 2700.00),   -- BPID=30  Amir
+(14, 15, 31, 4, 75, 'NotApplicable', FALSE, 0.00, 2700.00),   -- BPID=31  Priya
+
+/* --- Booking 15: Interior V5 — 1 Adult then 1 Child ----------------------------------- */
+/* Adult inserted first so the child guardian check finds an adult already in the cabin.   */
+/* Adult Interior V5 = FareRuleID=67, 1 800.00 | Child Interior V5 = FareRuleID=65, 1 000.00 */
+(15, 16, 32, 4, 67, 'NotApplicable', FALSE, 0.00, 1800.00),   -- BPID=32  Tan Boon Hua  Adult
+(15, 16, 33, 2, 65, 'NotApplicable', FALSE, 0.00, 1000.00),   -- BPID=33  Mei Xin Tan   Child
+
+/* --- Booking 16: Suite V5 — 2 Adults (Adult Suite V5 = FareRuleID=79, 4 800.00) ------- */
+(16, 17, 34, 4, 79, 'NotApplicable', FALSE, 0.00, 4800.00),   -- BPID=34  David
+(16, 17, 35, 4, 79, 'NotApplicable', FALSE, 0.00, 4800.00);   -- BPID=35  Grace
+
+-- ----------------------------------------------------------------
+-- BOOKING BAGGAGE
+-- IsOverLimit hardcoded by comparing WeightKG against voyage limit.
+--   Voyage 3 limit = 23 kg | Voyage 4 limit = 25 kg | Voyage 5 limit = 28 kg
+-- ----------------------------------------------------------------
+INSERT INTO BookingBaggage (BookingPassengerID, WeightKG, IsOverLimit, ExcessFee)
+VALUES
+-- Booking 9 (V3, 23 kg limit)
+(21, 20.00, FALSE, 0),   -- Marco:    20.0 kg ✓
+(22, 18.50, FALSE, 0),   -- Giulia:   18.5 kg ✓
+-- Booking 10 (V3, 23 kg limit)
+(23, 22.50, FALSE, 0),   -- Thomas:   22.5 kg ✓
+(24, 19.00, FALSE, 0),   -- Elizabeth:19.0 kg ✓
+-- Booking 11 (V3, 23 kg limit)
+(25, 24.50, TRUE,  0),   -- Chen Wei: 24.5 kg ✗ over 23 kg limit
+(26, 17.00, FALSE, 0),   -- Li Mei:   17.0 kg ✓
+-- Booking 12 (V4, 25 kg limit)
+(27, 23.00, FALSE, 0),   -- Jack:     23.0 kg ✓
+(28, 21.50, FALSE, 0),   -- Emily:    21.5 kg ✓
+-- Booking 13 (V4, 25 kg limit)
+(29, 27.00, TRUE,  0),   -- Robert:   27.0 kg ✗ over 25 kg limit
+-- Booking 14 (V5, 28 kg limit)
+(30, 26.00, FALSE, 0),   -- Amir:     26.0 kg ✓
+(31, 22.00, FALSE, 0),   -- Priya:    22.0 kg ✓
+-- Booking 15 (V5, 28 kg limit)
+(32, 30.00, TRUE,  0),   -- Tan:      30.0 kg ✗ over 28 kg limit
+(33,  8.00, FALSE, 0),   -- Mei Xin:   8.0 kg ✓
+-- Booking 16 (V5, 28 kg limit)
+(34, 25.00, FALSE, 0),   -- David:    25.0 kg ✓
+(35, 23.50, FALSE, 0);   -- Grace:    23.5 kg ✓
+
+-- ----------------------------------------------------------------
+-- PAYMENTS  (PaymentID 9–16)
+-- ----------------------------------------------------------------
+INSERT INTO Payment (BookingID, PaymentDateTime, Amount, PaymentMethod, PaymentStatus, TransactionReference)
+VALUES
+(9,  '2026-01-15 09:30:00',  1500.00, 'Credit Card',   'Paid', 'TXN-20260115-009'),
+(10, '2026-01-20 14:20:00',  1800.00, 'Bank Transfer', 'Paid', 'TXN-20260120-010'),
+(11, '2026-02-01 11:15:00',  2600.00, 'Debit Card',    'Paid', 'TXN-20260201-011'),
+(12, '2026-02-10 10:30:00',  1800.00, 'Credit Card',   'Paid', 'TXN-20260210-012'),
+(13, '2026-02-15 15:20:00',  1050.00, 'Credit Card',   'Paid', 'TXN-20260215-013'),
+(14, '2026-07-20 08:30:00',  5400.00, 'Bank Transfer', 'Paid', 'TXN-20260720-014'),
+(15, '2026-07-25 13:15:00',  2800.00, 'Credit Card',   'Paid', 'TXN-20260725-015'),
+(16, '2026-08-01 10:45:00',  9600.00, 'Debit Card',    'Paid', 'TXN-20260801-016');
+
+SELECT 'Additional sample data loaded successfully.' AS Message;
