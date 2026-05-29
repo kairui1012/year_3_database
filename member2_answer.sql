@@ -283,11 +283,12 @@ SELECT
     r.RouteType,
     v.DepartureDateTime,
     COUNT(DISTINCT c.CabinID)                               AS TotalCabinsOnShip,
-    COUNT(DISTINCT bc.CabinID)                              AS BookedCabins,
-    COUNT(DISTINCT c.CabinID)
-        - COUNT(DISTINCT bc.CabinID)                        AS AvailableCabins,
+    COUNT(DISTINCT CASE WHEN b.BookingID IS NOT NULL THEN c.CabinID END) AS BookedCabins,
+        COUNT(DISTINCT c.CabinID)
+        - COUNT(DISTINCT CASE WHEN b.BookingID IS NOT NULL THEN c.CabinID END) AS AvailableCabins,
+        
     ROUND(
-        COUNT(DISTINCT bc.CabinID) * 100.0
+        COUNT(DISTINCT CASE WHEN b.BookingID IS NOT NULL THEN c.CabinID END) * 100.0
         / NULLIF(COUNT(DISTINCT c.CabinID), 0)
     , 2)                                                    AS OccupancyRatePct
 FROM CruiseVoyage  v

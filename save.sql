@@ -742,21 +742,15 @@ CREATE TABLE Payment (
 /* ============================================================
    SECTION 8: FUNCTION AND TRIGGERS
    ============================================================
-   6 Schema Constraints (CHECK constraints in Sections 1–7):
-     1. CK_Cabin_MaxOccupancy          — enforces max 5 passengers per cabin
-     2. CK_CruiseVoyage_ArrivalAfterDeparture — arrival must be after departure
-     3. CK_BookingPassenger_InfantBedOption   — valid bed options for infants
-     4. CK_Booking_Status              — restricts to valid booking states
-     5. CK_CancellationPolicy_PenaltyType     — restricts to valid penalty types
-     6. CK_AgeCategory_AgeRange        — ensures MinAge <= MaxAge
+   Shared validation and calculation logic is extracted into
+   stored procedures to eliminate BI/BU duplication:
+     - sp_ValidatePassengerRules   (steps 1-6: validation only)
+     - sp_ComputePassengerFare     (steps 7-8: fare + supervision fee)
+     - sp_ComputeCancellationPenalty
+     - sp_ValidateReschedule
 
-   6 Triggers (BEFORE/AFTER INSERT only):
-     1. TR_BookingCabin_BI_PreventDoubleBooking
-     2. TR_BookingPassenger_BI_ValidateRules
-     3. TR_BookingBaggage_BI_ValidateLimit
-     4. TR_BookingCancellation_BI_ApplyPenalty
-     5. TR_BookingCancellation_AI_UpdateBookingStatus
-     6. TR_BookingPassenger_AI_UpdateBookingTotal
+   Triggers call these procedures, then assign NEW.field values
+   from session variables (@var) returned by the procedures.
    ============================================================ */
 
 DELIMITER $$
@@ -764,8 +758,6 @@ DELIMITER $$
 /*
  * fn_CalculateAge
  * Returns the age of a person in whole years on a given reference date.
- * Used in TR_BookingPassenger_BI_ValidateRules to verify the passenger's
- * age category matches their actual age at voyage departure.
  */
 CREATE FUNCTION fn_CalculateAge(DateOfBirth DATE, ReferenceDate DATE)
 RETURNS INT
@@ -775,11 +767,331 @@ BEGIN
 END$$
 
 /* ---------------------------------------------------------------
-   Trigger 1: TR_BookingCabin_BI_PreventDoubleBooking
-   Fires:  BEFORE INSERT ON BookingCabin
-   Rules enforced:
-     1. The cabin must belong to the ship assigned to the voyage.
-     2. The same cabin cannot be booked twice on the same voyage.
+   Trigger: TR_Passenger_BI_ValidateDateOfBirth
+   --------------------------------------------------------------- */
+CREATE TRIGGER TR_Passenger_BI_ValidateDateOfBirth
+BEFORE INSERT ON Passenger
+FOR EACH ROW
+BEGIN
+    IF NEW.DateOfBirth > CURDATE() THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Passenger date of birth cannot be in the future.';
+    END IF;
+END$$
+
+/* ---------------------------------------------------------------
+   Trigger: TR_Passenger_BU_ValidateDateOfBirth
+   --------------------------------------------------------------- */
+CREATE TRIGGER TR_Passenger_BU_ValidateDateOfBirth
+BEFORE UPDATE ON Passenger
+FOR EACH ROW
+BEGIN
+    IF NEW.DateOfBirth > CURDATE() THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Passenger date of birth cannot be in the future.';
+    END IF;
+END$$
+
+/* ============================================================
+   Stored Procedure: sp_ValidatePassengerRules
+   Handles steps 1-6 for BookingPassenger (validation only).
+   p_ExcludePassengerID: NULL for INSERT, OLD.BookingPassengerID for UPDATE.
+   ============================================================ */
+CREATE PROCEDURE sp_ValidatePassengerRules(
+    IN p_BookingID          INT,
+    IN p_BookingCabinID     INT,
+    IN p_PassengerID        INT,
+    IN p_AgeCategoryID      INT,
+    IN p_InfantBedOption    VARCHAR(20),
+    IN p_IsChaperonedYouth  BOOLEAN,
+    IN p_ExcludePassengerID INT
+)
+BEGIN
+    DECLARE v_CabinBookingID  INT;
+    DECLARE v_MaxOccupancy    INT;
+    DECLARE v_OccupancyCount  INT;
+    DECLARE v_PassengerAge    INT;
+    DECLARE v_CategoryMin     INT;
+    DECLARE v_CategoryMax     INT;
+    DECLARE v_CategoryName    VARCHAR(30);
+    DECLARE v_AllowsYouth     BOOLEAN;
+    DECLARE v_HasGuardian     INT DEFAULT 0;
+
+    -- Step 1: BookingCabin must belong to this Booking
+    SELECT bc.BookingID, c.MaxOccupancy
+    INTO v_CabinBookingID, v_MaxOccupancy
+    FROM BookingCabin bc
+    INNER JOIN Cabin c ON bc.CabinID = c.CabinID
+    WHERE bc.BookingCabinID = p_BookingCabinID;
+
+    IF v_CabinBookingID <> p_BookingID THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'BookingPassenger.BookingID must match BookingCabin.BookingID.';
+    END IF;
+
+    -- Step 2: Max occupancy (UPDATE excludes current row via p_ExcludePassengerID)
+    SELECT COUNT(*) INTO v_OccupancyCount
+    FROM BookingPassenger
+    WHERE BookingCabinID = p_BookingCabinID
+      AND (p_ExcludePassengerID IS NULL OR BookingPassengerID <> p_ExcludePassengerID);
+
+    IF v_OccupancyCount + 1 > v_MaxOccupancy OR v_OccupancyCount + 1 > 5 THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'A cabin can contain a maximum of 5 passengers only.';
+    END IF;
+
+    -- Step 3: Age category must match actual age at voyage departure
+    SELECT
+        fn_CalculateAge(p.DateOfBirth, DATE(v.DepartureDateTime)),
+        ac.MinAge, ac.MaxAge, ac.CategoryName, co.AllowsChaperonedYouth
+    INTO v_PassengerAge, v_CategoryMin, v_CategoryMax, v_CategoryName, v_AllowsYouth
+    FROM Passenger p
+    INNER JOIN Booking b         ON b.BookingID = p_BookingID
+    INNER JOIN CruiseVoyage v    ON b.VoyageID = v.VoyageID
+    INNER JOIN CruiseShip s      ON v.ShipID = s.ShipID
+    INNER JOIN CruiseOperator co ON s.OperatorID = co.OperatorID
+    INNER JOIN AgeCategory ac    ON ac.AgeCategoryID = p_AgeCategoryID
+    WHERE p.PassengerID = p_PassengerID;
+
+    IF v_PassengerAge < v_CategoryMin
+       OR (v_CategoryMax IS NOT NULL AND v_PassengerAge > v_CategoryMax) THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Passenger age category must match the passenger age at voyage departure.';
+    END IF;
+
+    -- Step 4: InfantBedOption
+    IF v_CategoryName = 'Infant' AND p_InfantBedOption NOT IN ('SharedBed', 'Cot') THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Infant passengers must have either SharedBed or Cot as InfantBedOption.';
+    END IF;
+
+    IF v_CategoryName <> 'Infant' AND p_InfantBedOption <> 'NotApplicable' THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'InfantBedOption must be NotApplicable for non-infant passengers.';
+    END IF;
+
+    -- Step 5: Chaperoned Youth eligibility (ages 15-17, operator must support)
+    IF p_IsChaperonedYouth = TRUE
+       AND (v_AllowsYouth = FALSE OR v_CategoryName <> 'Teen' OR v_PassengerAge NOT BETWEEN 15 AND 17) THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Chaperoned Youth is only allowed for age 15 to 17 when the operator supports the program.';
+    END IF;
+
+    -- Step 6: Minors need an adult guardian in the same cabin (or adjacent cabin on INSERT)
+    IF v_PassengerAge <= 17 AND p_IsChaperonedYouth = FALSE THEN
+
+        SELECT COUNT(*) INTO v_HasGuardian
+        FROM BookingPassenger bp
+        INNER JOIN AgeCategory ac ON bp.AgeCategoryID = ac.AgeCategoryID
+        WHERE bp.BookingID = p_BookingID
+          AND bp.BookingCabinID = p_BookingCabinID
+          AND ac.MinAge >= 18
+          AND (p_ExcludePassengerID IS NULL OR bp.BookingPassengerID <> p_ExcludePassengerID);
+
+        -- On INSERT only: also accept an adult in an adjacent/connecting cabin
+        IF v_HasGuardian = 0 AND p_ExcludePassengerID IS NULL THEN
+            SELECT COUNT(*) INTO v_HasGuardian
+            FROM BookingPassenger   guardian_bp
+            INNER JOIN AgeCategory  guardian_ac ON guardian_bp.AgeCategoryID = guardian_ac.AgeCategoryID
+            INNER JOIN BookingCabin guardian_bc ON guardian_bp.BookingCabinID = guardian_bc.BookingCabinID
+            INNER JOIN Booking      guardian_b  ON guardian_bc.BookingID = guardian_b.BookingID
+            INNER JOIN BookingCabin teen_bc     ON teen_bc.BookingCabinID = p_BookingCabinID
+            INNER JOIN CabinAdjacency ca        ON ca.CabinID = teen_bc.CabinID
+                                               AND ca.AdjacentCabinID = guardian_bc.CabinID
+            INNER JOIN Booking      teen_b      ON teen_b.BookingID = p_BookingID
+            WHERE guardian_b.VoyageID = teen_b.VoyageID
+              AND guardian_b.BookingStatus IN ('Pending', 'Confirmed')
+              AND guardian_ac.MinAge >= 18;
+        END IF;
+
+        IF v_HasGuardian = 0 THEN
+            SIGNAL SQLSTATE '45000'
+                SET MESSAGE_TEXT = 'Passengers aged 17 or below require an adult in the same or adjacent cabin unless approved for Chaperoned Youth.';
+        END IF;
+    END IF;
+END$$
+
+/* ============================================================
+   Stored Procedure: sp_ComputePassengerFare
+   Handles steps 7-8: supervision fee and FinalFare calculation.
+   Returns results via session variables:
+     @fare_rule_id, @final_fare, @daily_supervision_fee
+   ============================================================ */
+CREATE PROCEDURE sp_ComputePassengerFare(
+    IN p_BookingID         INT,
+    IN p_BookingCabinID    INT,
+    IN p_AgeCategoryID     INT,
+    IN p_InfantBedOption   VARCHAR(20),
+    IN p_IsChaperonedYouth BOOLEAN
+)
+BEGIN
+    DECLARE v_CategoryName VARCHAR(30);
+    DECLARE v_AdultFare    DECIMAL(12,2);
+    DECLARE v_ChildFare    DECIMAL(12,2);
+    DECLARE v_BaseFare     DECIMAL(12,2);
+    DECLARE v_FareRuleID   INT;
+
+    SELECT ac.CategoryName INTO v_CategoryName
+    FROM AgeCategory ac WHERE ac.AgeCategoryID = p_AgeCategoryID;
+
+    -- Step 7: daily supervision fee for Chaperoned Youth
+    IF p_IsChaperonedYouth = TRUE THEN
+        SELECT COALESCE(MAX(Fee), 0) INTO @daily_supervision_fee
+        FROM SpecialService WHERE ServiceType = 'Chaperoned Youth';
+    ELSE
+        SET @daily_supervision_fee = 0;
+    END IF;
+
+    -- Step 8: FinalFare
+    IF v_CategoryName = 'Infant' THEN
+
+        SELECT fr.BaseFare INTO v_AdultFare
+        FROM FareRule fr
+        INNER JOIN Booking b       ON b.BookingID = p_BookingID
+        INNER JOIN BookingCabin bc ON bc.BookingCabinID = p_BookingCabinID
+        INNER JOIN Cabin c         ON c.CabinID = bc.CabinID
+        INNER JOIN AgeCategory ac  ON ac.AgeCategoryID = fr.AgeCategoryID
+        WHERE fr.VoyageID = b.VoyageID AND fr.CabinCategoryID = c.CabinCategoryID
+          AND ac.CategoryName = 'Adult'
+          AND fr.EffectiveFrom <= DATE(b.BookingDate)
+          AND (fr.EffectiveTo IS NULL OR fr.EffectiveTo >= DATE(b.BookingDate))
+        ORDER BY fr.EffectiveFrom DESC LIMIT 1;
+
+        IF v_AdultFare IS NULL THEN
+            SIGNAL SQLSTATE '45000'
+                SET MESSAGE_TEXT = 'Adult fare rule is required to calculate SharedBed infant fare.';
+        END IF;
+
+        SELECT fr.BaseFare INTO v_ChildFare
+        FROM FareRule fr
+        INNER JOIN Booking b       ON b.BookingID = p_BookingID
+        INNER JOIN BookingCabin bc ON bc.BookingCabinID = p_BookingCabinID
+        INNER JOIN Cabin c         ON c.CabinID = bc.CabinID
+        INNER JOIN AgeCategory ac  ON ac.AgeCategoryID = fr.AgeCategoryID
+        WHERE fr.VoyageID = b.VoyageID AND fr.CabinCategoryID = c.CabinCategoryID
+          AND ac.CategoryName = 'Child'
+          AND fr.EffectiveFrom <= DATE(b.BookingDate)
+          AND (fr.EffectiveTo IS NULL OR fr.EffectiveTo >= DATE(b.BookingDate))
+        ORDER BY fr.EffectiveFrom DESC LIMIT 1;
+
+        IF v_ChildFare IS NULL THEN
+            SIGNAL SQLSTATE '45000'
+                SET MESSAGE_TEXT = 'Child fare rule is required to calculate Cot infant fare.';
+        END IF;
+
+        SET @fare_rule_id = NULL;
+        SET @final_fare   = IF(p_InfantBedOption = 'SharedBed', v_AdultFare * 0.15, v_ChildFare * 0.50);
+
+    ELSE
+
+        SELECT fr.FareRuleID, fr.BaseFare INTO v_FareRuleID, v_BaseFare
+        FROM FareRule fr
+        INNER JOIN Booking b       ON b.BookingID = p_BookingID
+        INNER JOIN BookingCabin bc ON bc.BookingCabinID = p_BookingCabinID
+        INNER JOIN Cabin c         ON c.CabinID = bc.CabinID
+        WHERE fr.VoyageID = b.VoyageID AND fr.CabinCategoryID = c.CabinCategoryID
+          AND fr.AgeCategoryID = p_AgeCategoryID
+          AND fr.EffectiveFrom <= DATE(b.BookingDate)
+          AND (fr.EffectiveTo IS NULL OR fr.EffectiveTo >= DATE(b.BookingDate))
+        ORDER BY fr.EffectiveFrom DESC LIMIT 1;
+
+        IF v_BaseFare IS NULL THEN
+            SIGNAL SQLSTATE '45000'
+                SET MESSAGE_TEXT = 'Fare rule is required for this voyage, cabin category, and age category.';
+        END IF;
+
+        SET @fare_rule_id = v_FareRuleID;
+        SET @final_fare   = v_BaseFare;
+    END IF;
+END$$
+
+/* ============================================================
+   Stored Procedure: sp_ComputeCancellationPenalty
+   Returns results via session variables: @penalty_amount, @refund_amount
+   ============================================================ */
+CREATE PROCEDURE sp_ComputeCancellationPenalty(
+    IN p_BookingID            INT,
+    IN p_CancellationDateTime DATETIME
+)
+BEGIN
+    DECLARE v_DepartureTime DATETIME;
+    DECLARE v_BookingTotal  DECIMAL(12,2);
+    DECLARE v_HoursUntil    INT;
+    DECLARE v_PenaltyType   VARCHAR(30);
+    DECLARE v_PenaltyValue  DECIMAL(10,2);
+
+    SELECT v.DepartureDateTime, b.TotalAmount, cp.PenaltyType, cp.PenaltyValue
+    INTO v_DepartureTime, v_BookingTotal, v_PenaltyType, v_PenaltyValue
+    FROM Booking b
+    INNER JOIN CruiseVoyage v ON b.VoyageID = v.VoyageID
+    INNER JOIN CruiseShip s   ON v.ShipID = s.ShipID
+    LEFT JOIN CancellationPolicy cp
+        ON s.OperatorID = cp.OperatorID
+       AND cp.HoursBeforeDeparture >= TIMESTAMPDIFF(HOUR, p_CancellationDateTime, v.DepartureDateTime)
+    WHERE b.BookingID = p_BookingID
+    ORDER BY cp.HoursBeforeDeparture ASC
+    LIMIT 1;
+
+    SET v_HoursUntil = TIMESTAMPDIFF(HOUR, p_CancellationDateTime, v_DepartureTime);
+
+    IF v_HoursUntil <= 48 AND v_PenaltyType = 'FullForfeit' THEN
+        SET @penalty_amount = v_BookingTotal;
+        SET @refund_amount  = 0;
+    ELSEIF v_PenaltyType = 'Percentage' THEN
+        SET @penalty_amount = v_BookingTotal * (v_PenaltyValue / 100);
+        SET @refund_amount  = v_BookingTotal - @penalty_amount;
+    ELSEIF v_PenaltyType = 'FixedAmount' THEN
+        SET @penalty_amount = LEAST(v_PenaltyValue, v_BookingTotal);
+        SET @refund_amount  = v_BookingTotal - @penalty_amount;
+    ELSE
+        SET @penalty_amount = 0;
+        SET @refund_amount  = v_BookingTotal;
+    END IF;
+END$$
+
+/* ============================================================
+   Stored Procedure: sp_ValidateReschedule
+   Returns @reschedule_fee (NULL = no change needed).
+   ============================================================ */
+CREATE PROCEDURE sp_ValidateReschedule(
+    IN p_OriginalBookingID INT,
+    IN p_NewVoyageID       INT,
+    IN p_RequestDateTime   DATETIME
+)
+BEGIN
+    DECLARE v_BookingDate   DATETIME;
+    DECLARE v_OrigDeparture DATETIME;
+    DECLARE v_NewDeparture  DATETIME;
+    DECLARE v_Total         DECIMAL(12,2);
+
+    SELECT b.BookingDate, v.DepartureDateTime, b.TotalAmount
+    INTO v_BookingDate, v_OrigDeparture, v_Total
+    FROM Booking b
+    INNER JOIN CruiseVoyage v ON b.VoyageID = v.VoyageID
+    WHERE b.BookingID = p_OriginalBookingID;
+
+    SELECT DepartureDateTime INTO v_NewDeparture
+    FROM CruiseVoyage WHERE VoyageID = p_NewVoyageID;
+
+    IF p_RequestDateTime >= v_OrigDeparture THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'A departed cruise ticket cannot be rescheduled.';
+    END IF;
+
+    IF v_NewDeparture > DATE_ADD(v_BookingDate, INTERVAL 1 YEAR) THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'The new voyage must start within one year from the original booking date.';
+    END IF;
+
+    SET @reschedule_fee = IF(
+        TIMESTAMPDIFF(HOUR, p_RequestDateTime, v_OrigDeparture) <= 48,
+        v_Total,
+        NULL
+    );
+END$$
+
+/* ---------------------------------------------------------------
+   Trigger: TR_BookingCabin_BI_PreventDoubleBooking
    --------------------------------------------------------------- */
 CREATE TRIGGER TR_BookingCabin_BI_PreventDoubleBooking
 BEFORE INSERT ON BookingCabin
@@ -789,8 +1101,41 @@ BEGIN
     DECLARE v_CabinShipID   INT;
 
     SELECT v.ShipID INTO v_BookingShipID
-    FROM Booking b
-    INNER JOIN CruiseVoyage v ON b.VoyageID = v.VoyageID
+    FROM Booking b INNER JOIN CruiseVoyage v ON b.VoyageID = v.VoyageID
+    WHERE b.BookingID = NEW.BookingID;
+
+    SELECT ShipID INTO v_CabinShipID FROM Cabin WHERE CabinID = NEW.CabinID;
+
+    IF v_BookingShipID <> v_CabinShipID THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Cabin must belong to the ship assigned to the booked voyage.';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM BookingCabin bc
+        INNER JOIN Booking b  ON bc.BookingID = b.BookingID
+        INNER JOIN Booking nb ON NEW.BookingID = nb.BookingID
+        WHERE bc.CabinID = NEW.CabinID AND b.VoyageID = nb.VoyageID
+          AND b.BookingStatus IN ('Pending', 'Confirmed')
+          AND nb.BookingStatus IN ('Pending', 'Confirmed')
+    ) THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'This cabin is already booked for the same voyage.';
+    END IF;
+END$$
+
+/* ---------------------------------------------------------------
+   Trigger: TR_BookingCabin_BU_PreventDoubleBooking
+   --------------------------------------------------------------- */
+CREATE TRIGGER TR_BookingCabin_BU_PreventDoubleBooking
+BEFORE UPDATE ON BookingCabin
+FOR EACH ROW
+BEGIN
+    DECLARE v_BookingShipID INT;
+    DECLARE v_CabinShipID   INT;
+
+    SELECT v.ShipID INTO v_BookingShipID
+    FROM Booking b INNER JOIN CruiseVoyage v ON b.VoyageID = v.VoyageID
     WHERE b.BookingID = NEW.BookingID;
 
     SELECT ShipID INTO v_CabinShipID FROM Cabin WHERE CabinID = NEW.CabinID;
@@ -805,8 +1150,9 @@ BEGIN
         INNER JOIN Booking b  ON bc.BookingID = b.BookingID
         INNER JOIN Booking nb ON NEW.BookingID = nb.BookingID
         WHERE bc.CabinID = NEW.CabinID
+          AND bc.BookingCabinID <> OLD.BookingCabinID
           AND b.VoyageID = nb.VoyageID
-          AND b.BookingStatus  IN ('Pending', 'Confirmed')
+          AND b.BookingStatus IN ('Pending', 'Confirmed')
           AND nb.BookingStatus IN ('Pending', 'Confirmed')
     ) THEN
         SIGNAL SQLSTATE '45000'
@@ -815,198 +1161,53 @@ BEGIN
 END$$
 
 /* ---------------------------------------------------------------
-   Trigger 2: TR_BookingPassenger_BI_ValidateRules
-   Fires:  BEFORE INSERT ON BookingPassenger
-   Rules enforced:
-     1. BookingCabin must belong to the same booking.
-     2. Cabin occupancy must not exceed MaxOccupancy or 5.
-     3. Passenger age category must match actual age at departure.
-     4. InfantBedOption must be SharedBed/Cot for infants, NotApplicable otherwise.
-     5. Chaperoned Youth: ages 15–17 only, operator must support programme.
-     6. Minors (age ≤ 17) need an adult guardian in same or adjacent cabin.
-     7. Sets DailySupervisionFee for Chaperoned Youth passengers.
-     8. Computes FinalFare (infant %, or base fare from FareRule).
+   Trigger: TR_BookingPassenger_BI_ValidateRules
+   Calls sp_ValidatePassengerRules (steps 1-6) then
+   sp_ComputePassengerFare (steps 7-8) and assigns NEW fields.
    --------------------------------------------------------------- */
 CREATE TRIGGER TR_BookingPassenger_BI_ValidateRules
 BEFORE INSERT ON BookingPassenger
 FOR EACH ROW
 BEGIN
-    DECLARE v_CabinBookingID  INT;
-    DECLARE v_MaxOccupancy    INT;
-    DECLARE v_OccupancyCount  INT;
-    DECLARE v_PassengerAge    INT;
-    DECLARE v_CategoryMin     INT;
-    DECLARE v_CategoryMax     INT;
-    DECLARE v_CategoryName    VARCHAR(30);
-    DECLARE v_AllowsYouth     BOOLEAN;
-    DECLARE v_HasGuardian     INT DEFAULT 0;
-    DECLARE v_FareRuleID      INT;
-    DECLARE v_BaseFare        DECIMAL(12,2);
-    DECLARE v_AdultFare       DECIMAL(12,2);
-    DECLARE v_ChildFare       DECIMAL(12,2);
-    DECLARE v_SupervisionFee  DECIMAL(10,2);
-
-    -- Step 1: BookingCabin must belong to this booking
-    SELECT bc.BookingID, c.MaxOccupancy
-    INTO v_CabinBookingID, v_MaxOccupancy
-    FROM BookingCabin bc
-    INNER JOIN Cabin c ON bc.CabinID = c.CabinID
-    WHERE bc.BookingCabinID = NEW.BookingCabinID;
-
-    IF v_CabinBookingID <> NEW.BookingID THEN
-        SIGNAL SQLSTATE '45000'
-            SET MESSAGE_TEXT = 'BookingPassenger.BookingID must match BookingCabin.BookingID.';
-    END IF;
-
-    -- Step 2: max occupancy (hard cap of 5)
-    SELECT COUNT(*) INTO v_OccupancyCount
-    FROM BookingPassenger WHERE BookingCabinID = NEW.BookingCabinID;
-
-    IF v_OccupancyCount + 1 > v_MaxOccupancy OR v_OccupancyCount + 1 > 5 THEN
-        SIGNAL SQLSTATE '45000'
-            SET MESSAGE_TEXT = 'A cabin can contain a maximum of 5 passengers only.';
-    END IF;
-
-    -- Step 3: age category must match actual age at voyage departure
-    SELECT fn_CalculateAge(p.DateOfBirth, DATE(v.DepartureDateTime)),
-           ac.MinAge, ac.MaxAge, ac.CategoryName, co.AllowsChaperonedYouth
-    INTO v_PassengerAge, v_CategoryMin, v_CategoryMax, v_CategoryName, v_AllowsYouth
-    FROM Passenger p
-    INNER JOIN Booking b         ON b.BookingID     = NEW.BookingID
-    INNER JOIN CruiseVoyage v    ON b.VoyageID       = v.VoyageID
-    INNER JOIN CruiseShip s      ON v.ShipID         = s.ShipID
-    INNER JOIN CruiseOperator co ON s.OperatorID     = co.OperatorID
-    INNER JOIN AgeCategory ac    ON ac.AgeCategoryID = NEW.AgeCategoryID
-    WHERE p.PassengerID = NEW.PassengerID;
-
-    IF v_PassengerAge < v_CategoryMin
-       OR (v_CategoryMax IS NOT NULL AND v_PassengerAge > v_CategoryMax) THEN
-        SIGNAL SQLSTATE '45000'
-            SET MESSAGE_TEXT = 'Passenger age category must match the passenger age at voyage departure.';
-    END IF;
-
-    -- Step 4: InfantBedOption validation
-    IF v_CategoryName = 'Infant' AND NEW.InfantBedOption NOT IN ('SharedBed', 'Cot') THEN
-        SIGNAL SQLSTATE '45000'
-            SET MESSAGE_TEXT = 'Infant passengers must have either SharedBed or Cot as InfantBedOption.';
-    END IF;
-
-    IF v_CategoryName <> 'Infant' AND NEW.InfantBedOption <> 'NotApplicable' THEN
-        SIGNAL SQLSTATE '45000'
-            SET MESSAGE_TEXT = 'InfantBedOption must be NotApplicable for non-infant passengers.';
-    END IF;
-
-    -- Step 5: Chaperoned Youth eligibility
-    IF NEW.IsChaperonedYouth = TRUE
-       AND (v_AllowsYouth = FALSE OR v_CategoryName <> 'Teen' OR v_PassengerAge NOT BETWEEN 15 AND 17) THEN
-        SIGNAL SQLSTATE '45000'
-            SET MESSAGE_TEXT = 'Chaperoned Youth is only allowed for age 15 to 17 when the operator supports the program.';
-    END IF;
-
-    -- Step 6: minors need adult guardian in same or adjacent cabin
-    IF v_PassengerAge <= 17 AND NEW.IsChaperonedYouth = FALSE THEN
-        SELECT COUNT(*) INTO v_HasGuardian
-        FROM BookingPassenger bp
-        INNER JOIN AgeCategory ac ON bp.AgeCategoryID = ac.AgeCategoryID
-        WHERE bp.BookingID = NEW.BookingID AND bp.BookingCabinID = NEW.BookingCabinID
-          AND ac.MinAge >= 18;
-
-        IF v_HasGuardian = 0 THEN
-            SELECT COUNT(*) INTO v_HasGuardian
-            FROM BookingPassenger   guardian_bp
-            INNER JOIN AgeCategory  guardian_ac ON guardian_bp.AgeCategoryID  = guardian_ac.AgeCategoryID
-            INNER JOIN BookingCabin guardian_bc ON guardian_bp.BookingCabinID = guardian_bc.BookingCabinID
-            INNER JOIN Booking      guardian_b  ON guardian_bc.BookingID      = guardian_b.BookingID
-            INNER JOIN BookingCabin teen_bc     ON teen_bc.BookingCabinID     = NEW.BookingCabinID
-            INNER JOIN CabinAdjacency ca        ON ca.CabinID       = teen_bc.CabinID
-                                               AND ca.AdjacentCabinID = guardian_bc.CabinID
-            INNER JOIN Booking      teen_b      ON teen_b.BookingID = NEW.BookingID
-            WHERE guardian_b.VoyageID = teen_b.VoyageID
-              AND guardian_b.BookingStatus IN ('Pending', 'Confirmed')
-              AND guardian_ac.MinAge >= 18;
-        END IF;
-
-        IF v_HasGuardian = 0 THEN
-            SIGNAL SQLSTATE '45000'
-                SET MESSAGE_TEXT = 'Passengers aged 17 or below require an adult in the same or adjacent cabin unless approved for Chaperoned Youth.';
-        END IF;
-    END IF;
-
-    -- Step 7: supervision fee for Chaperoned Youth
-    IF NEW.IsChaperonedYouth = TRUE THEN
-        SELECT COALESCE(MAX(Fee), 0) INTO v_SupervisionFee
-        FROM SpecialService WHERE ServiceType = 'Chaperoned Youth';
-        SET NEW.DailySupervisionFee = v_SupervisionFee;
-    ELSE
-        SET NEW.DailySupervisionFee = 0;
-    END IF;
-
-    -- Step 8: compute FinalFare
-    IF v_CategoryName = 'Infant' THEN
-        SELECT fr.BaseFare INTO v_AdultFare
-        FROM FareRule fr
-        INNER JOIN Booking b       ON b.BookingID        = NEW.BookingID
-        INNER JOIN BookingCabin bc ON bc.BookingCabinID  = NEW.BookingCabinID
-        INNER JOIN Cabin c         ON c.CabinID          = bc.CabinID
-        INNER JOIN AgeCategory ac  ON ac.AgeCategoryID   = fr.AgeCategoryID
-        WHERE fr.VoyageID = b.VoyageID AND fr.CabinCategoryID = c.CabinCategoryID
-          AND ac.CategoryName = 'Adult'
-          AND fr.EffectiveFrom <= DATE(b.BookingDate)
-          AND (fr.EffectiveTo IS NULL OR fr.EffectiveTo >= DATE(b.BookingDate))
-        ORDER BY fr.EffectiveFrom DESC LIMIT 1;
-
-        IF v_AdultFare IS NULL THEN
-            SIGNAL SQLSTATE '45000'
-                SET MESSAGE_TEXT = 'Adult fare rule is required to calculate SharedBed infant fare.';
-        END IF;
-
-        SELECT fr.BaseFare INTO v_ChildFare
-        FROM FareRule fr
-        INNER JOIN Booking b       ON b.BookingID        = NEW.BookingID
-        INNER JOIN BookingCabin bc ON bc.BookingCabinID  = NEW.BookingCabinID
-        INNER JOIN Cabin c         ON c.CabinID          = bc.CabinID
-        INNER JOIN AgeCategory ac  ON ac.AgeCategoryID   = fr.AgeCategoryID
-        WHERE fr.VoyageID = b.VoyageID AND fr.CabinCategoryID = c.CabinCategoryID
-          AND ac.CategoryName = 'Child'
-          AND fr.EffectiveFrom <= DATE(b.BookingDate)
-          AND (fr.EffectiveTo IS NULL OR fr.EffectiveTo >= DATE(b.BookingDate))
-        ORDER BY fr.EffectiveFrom DESC LIMIT 1;
-
-        IF v_ChildFare IS NULL THEN
-            SIGNAL SQLSTATE '45000'
-                SET MESSAGE_TEXT = 'Child fare rule is required to calculate Cot infant fare.';
-        END IF;
-
-        SET NEW.FareRuleID = NULL;
-        SET NEW.FinalFare  = IF(NEW.InfantBedOption = 'SharedBed', v_AdultFare * 0.15, v_ChildFare * 0.50);
-
-    ELSE
-        SELECT fr.FareRuleID, fr.BaseFare INTO v_FareRuleID, v_BaseFare
-        FROM FareRule fr
-        INNER JOIN Booking b       ON b.BookingID        = NEW.BookingID
-        INNER JOIN BookingCabin bc ON bc.BookingCabinID  = NEW.BookingCabinID
-        INNER JOIN Cabin c         ON c.CabinID          = bc.CabinID
-        WHERE fr.VoyageID = b.VoyageID AND fr.CabinCategoryID = c.CabinCategoryID
-          AND fr.AgeCategoryID = NEW.AgeCategoryID
-          AND fr.EffectiveFrom <= DATE(b.BookingDate)
-          AND (fr.EffectiveTo IS NULL OR fr.EffectiveTo >= DATE(b.BookingDate))
-        ORDER BY fr.EffectiveFrom DESC LIMIT 1;
-
-        IF v_BaseFare IS NULL THEN
-            SIGNAL SQLSTATE '45000'
-                SET MESSAGE_TEXT = 'Fare rule is required for this voyage, cabin category, and age category.';
-        END IF;
-
-        SET NEW.FareRuleID = v_FareRuleID;
-        SET NEW.FinalFare  = v_BaseFare;
-    END IF;
+    CALL sp_ValidatePassengerRules(
+        NEW.BookingID, NEW.BookingCabinID, NEW.PassengerID,
+        NEW.AgeCategoryID, NEW.InfantBedOption, NEW.IsChaperonedYouth,
+        NULL
+    );
+    CALL sp_ComputePassengerFare(
+        NEW.BookingID, NEW.BookingCabinID,
+        NEW.AgeCategoryID, NEW.InfantBedOption, NEW.IsChaperonedYouth
+    );
+    SET NEW.FareRuleID         = @fare_rule_id;
+    SET NEW.FinalFare           = @final_fare;
+    SET NEW.DailySupervisionFee = @daily_supervision_fee;
 END$$
 
 /* ---------------------------------------------------------------
-   Trigger 3: TR_BookingBaggage_BI_ValidateLimit
-   Fires:  BEFORE INSERT ON BookingBaggage
-   Rule enforced: automatically sets IsOverLimit by comparing
-   the declared WeightKG against the voyage BaggageWeightLimitKG.
+   Trigger: TR_BookingPassenger_BU_ValidateRules
+   Same as BI but passes OLD.BookingPassengerID to exclude
+   the current row from occupancy and guardian checks.
+   --------------------------------------------------------------- */
+CREATE TRIGGER TR_BookingPassenger_BU_ValidateRules
+BEFORE UPDATE ON BookingPassenger
+FOR EACH ROW
+BEGIN
+    CALL sp_ValidatePassengerRules(
+        NEW.BookingID, NEW.BookingCabinID, NEW.PassengerID,
+        NEW.AgeCategoryID, NEW.InfantBedOption, NEW.IsChaperonedYouth,
+        OLD.BookingPassengerID
+    );
+    CALL sp_ComputePassengerFare(
+        NEW.BookingID, NEW.BookingCabinID,
+        NEW.AgeCategoryID, NEW.InfantBedOption, NEW.IsChaperonedYouth
+    );
+    SET NEW.FareRuleID         = @fare_rule_id;
+    SET NEW.FinalFare           = @final_fare;
+    SET NEW.DailySupervisionFee = @daily_supervision_fee;
+END$$
+
+/* ---------------------------------------------------------------
+   Trigger: TR_BookingBaggage_BI_ValidateLimit
    --------------------------------------------------------------- */
 CREATE TRIGGER TR_BookingBaggage_BI_ValidateLimit
 BEFORE INSERT ON BookingBaggage
@@ -1016,62 +1217,41 @@ BEGIN
     SELECT v.BaggageWeightLimitKG INTO v_AllowedWeight
     FROM BookingPassenger bp
     INNER JOIN Booking b      ON bp.BookingID = b.BookingID
-    INNER JOIN CruiseVoyage v ON b.VoyageID   = v.VoyageID
+    INNER JOIN CruiseVoyage v ON b.VoyageID = v.VoyageID
     WHERE bp.BookingPassengerID = NEW.BookingPassengerID;
     SET NEW.IsOverLimit = NEW.WeightKG > v_AllowedWeight;
 END$$
 
 /* ---------------------------------------------------------------
-   Trigger 4: TR_BookingCancellation_BI_ApplyPenalty
-   Fires:  BEFORE INSERT ON BookingCancellation
-   Rule enforced: computes PenaltyAmount and RefundAmount based on
-   the operator's CancellationPolicy and hours until departure.
-   Business rule: cancellation < 48 hours before departure → full forfeit.
+   Trigger: TR_BookingBaggage_BU_ValidateLimit
+   --------------------------------------------------------------- */
+CREATE TRIGGER TR_BookingBaggage_BU_ValidateLimit
+BEFORE UPDATE ON BookingBaggage
+FOR EACH ROW
+BEGIN
+    DECLARE v_AllowedWeight DECIMAL(6,2);
+    SELECT v.BaggageWeightLimitKG INTO v_AllowedWeight
+    FROM BookingPassenger bp
+    INNER JOIN Booking b      ON bp.BookingID = b.BookingID
+    INNER JOIN CruiseVoyage v ON b.VoyageID = v.VoyageID
+    WHERE bp.BookingPassengerID = NEW.BookingPassengerID;
+    SET NEW.IsOverLimit = NEW.WeightKG > v_AllowedWeight;
+END$$
+
+/* ---------------------------------------------------------------
+   Trigger: TR_BookingCancellation_BI_ApplyPenalty
    --------------------------------------------------------------- */
 CREATE TRIGGER TR_BookingCancellation_BI_ApplyPenalty
 BEFORE INSERT ON BookingCancellation
 FOR EACH ROW
 BEGIN
-    DECLARE v_DepartureTime DATETIME;
-    DECLARE v_BookingTotal  DECIMAL(12,2);
-    DECLARE v_HoursUntil    INT;
-    DECLARE v_PenaltyType   VARCHAR(30);
-    DECLARE v_PenaltyValue  DECIMAL(10,2);
-
-    SELECT v.DepartureDateTime, b.TotalAmount, cp.PenaltyType, cp.PenaltyValue
-    INTO v_DepartureTime, v_BookingTotal, v_PenaltyType, v_PenaltyValue
-    FROM Booking b
-    INNER JOIN CruiseVoyage v ON b.VoyageID = v.VoyageID
-    INNER JOIN CruiseShip s   ON v.ShipID   = s.ShipID
-    LEFT JOIN CancellationPolicy cp
-        ON s.OperatorID = cp.OperatorID
-       AND cp.HoursBeforeDeparture >= TIMESTAMPDIFF(HOUR, NEW.CancellationDateTime, v.DepartureDateTime)
-    WHERE b.BookingID = NEW.BookingID
-    ORDER BY cp.HoursBeforeDeparture ASC
-    LIMIT 1;
-
-    SET v_HoursUntil = TIMESTAMPDIFF(HOUR, NEW.CancellationDateTime, v_DepartureTime);
-
-    IF v_HoursUntil <= 48 AND v_PenaltyType = 'FullForfeit' THEN
-        SET NEW.PenaltyAmount = v_BookingTotal;
-        SET NEW.RefundAmount  = 0;
-    ELSEIF v_PenaltyType = 'Percentage' THEN
-        SET NEW.PenaltyAmount = v_BookingTotal * (v_PenaltyValue / 100);
-        SET NEW.RefundAmount  = v_BookingTotal - NEW.PenaltyAmount;
-    ELSEIF v_PenaltyType = 'FixedAmount' THEN
-        SET NEW.PenaltyAmount = LEAST(v_PenaltyValue, v_BookingTotal);
-        SET NEW.RefundAmount  = v_BookingTotal - NEW.PenaltyAmount;
-    ELSE
-        SET NEW.PenaltyAmount = 0;
-        SET NEW.RefundAmount  = v_BookingTotal;
-    END IF;
+    CALL sp_ComputeCancellationPenalty(NEW.BookingID, NEW.CancellationDateTime);
+    SET NEW.PenaltyAmount = @penalty_amount;
+    SET NEW.RefundAmount  = @refund_amount;
 END$$
 
 /* ---------------------------------------------------------------
-   Trigger 5: TR_BookingCancellation_AI_UpdateBookingStatus
-   Fires:  AFTER INSERT ON BookingCancellation
-   Rule enforced: marks the associated booking as 'Cancelled'
-   immediately after a cancellation record is inserted.
+   Trigger: TR_BookingCancellation_AI_UpdateBookingStatus
    --------------------------------------------------------------- */
 CREATE TRIGGER TR_BookingCancellation_AI_UpdateBookingStatus
 AFTER INSERT ON BookingCancellation
@@ -1081,23 +1261,74 @@ BEGIN
 END$$
 
 /* ---------------------------------------------------------------
-   Trigger 6: TR_BookingPassenger_AI_UpdateBookingTotal
-   Fires:  AFTER INSERT ON BookingPassenger
-   Rule enforced: recalculates Booking.TotalAmount as the sum of
-   all FinalFare values after each passenger is added.
+   Trigger: TR_BookingCancellation_BU_ApplyPenalty
+   --------------------------------------------------------------- */
+CREATE TRIGGER TR_BookingCancellation_BU_ApplyPenalty
+BEFORE UPDATE ON BookingCancellation
+FOR EACH ROW
+BEGIN
+    CALL sp_ComputeCancellationPenalty(NEW.BookingID, NEW.CancellationDateTime);
+    SET NEW.PenaltyAmount = @penalty_amount;
+    SET NEW.RefundAmount  = @refund_amount;
+END$$
+
+/* ---------------------------------------------------------------
+   Trigger: TR_RescheduleRequest_BI_ValidateRules
+   --------------------------------------------------------------- */
+CREATE TRIGGER TR_RescheduleRequest_BI_ValidateRules
+BEFORE INSERT ON RescheduleRequest
+FOR EACH ROW
+BEGIN
+    CALL sp_ValidateReschedule(NEW.OriginalBookingID, NEW.NewVoyageID, NEW.RequestDateTime);
+    IF @reschedule_fee IS NOT NULL THEN
+        SET NEW.RescheduleFee = @reschedule_fee;
+    END IF;
+END$$
+
+/* ---------------------------------------------------------------
+   Trigger: TR_RescheduleRequest_BU_ValidateRules
+   --------------------------------------------------------------- */
+CREATE TRIGGER TR_RescheduleRequest_BU_ValidateRules
+BEFORE UPDATE ON RescheduleRequest
+FOR EACH ROW
+BEGIN
+    CALL sp_ValidateReschedule(NEW.OriginalBookingID, NEW.NewVoyageID, NEW.RequestDateTime);
+    IF @reschedule_fee IS NOT NULL THEN
+        SET NEW.RescheduleFee = @reschedule_fee;
+    END IF;
+END$$
+
+/* ---------------------------------------------------------------
+   Triggers: keep Booking.TotalAmount in sync with BookingPassenger
    --------------------------------------------------------------- */
 CREATE TRIGGER TR_BookingPassenger_AI_UpdateBookingTotal
 AFTER INSERT ON BookingPassenger
 FOR EACH ROW
 BEGIN
     UPDATE Booking
-    SET TotalAmount = (SELECT COALESCE(SUM(FinalFare), 0)
-                       FROM BookingPassenger WHERE BookingID = NEW.BookingID)
+    SET TotalAmount = (SELECT COALESCE(SUM(FinalFare), 0) FROM BookingPassenger WHERE BookingID = NEW.BookingID)
     WHERE BookingID = NEW.BookingID;
 END$$
 
-DELIMITER ;
+CREATE TRIGGER TR_BookingPassenger_AU_UpdateBookingTotal
+AFTER UPDATE ON BookingPassenger
+FOR EACH ROW
+BEGIN
+    UPDATE Booking
+    SET TotalAmount = (SELECT COALESCE(SUM(FinalFare), 0) FROM BookingPassenger WHERE BookingID = NEW.BookingID)
+    WHERE BookingID = NEW.BookingID;
+END$$
 
+CREATE TRIGGER TR_BookingPassenger_AD_UpdateBookingTotal
+AFTER DELETE ON BookingPassenger
+FOR EACH ROW
+BEGIN
+    UPDATE Booking
+    SET TotalAmount = (SELECT COALESCE(SUM(FinalFare), 0) FROM BookingPassenger WHERE BookingID = OLD.BookingID)
+    WHERE BookingID = OLD.BookingID;
+END$$
+
+DELIMITER ;
 
 /* ============================================================
    SECTION 9: SEED DATA
@@ -1468,18 +1699,28 @@ SELECT 'GLCL_DB MySQL database created successfully.' AS Message;
 /* ============================================================
    SECTION 11: TEST DATA
    ============================================================
-   Scenarios:
+   Scenarios — each booking covers a distinct business rule:
      Voyage 1 (VoyageID=1): KL→Singapore, 2-day, GLCL Majesty
-       Booking 1 — Interior   — 2 Adults          (Ahmad, Nurul Hana)
-       Booking 2 — Balcony    — 2 Seniors          (James, Margaret) + wheelchair/mobility services
-       Booking 3 — Suite      — 2 Adults + Infant SharedBed (Rajesh, Priya, Emma)
-       Booking 4 — OV pair    — Adult guardian in O-803 (Sarah) + Teen in O-802 (Kevin, adjacent)
+       Booking 1 — Interior   — Adult + Teen SAME cabin      (Ahmad, Amir)
+       Booking 2 — Balcony    — 2 Seniors + accessibility    (James, Margaret)
+       Booking 3 — Suite      — 2 Adults + Infant SharedBed  (Rajesh, Priya, Emma)
+       Booking 4 — OV pair    — Adult guardian O-803 (Sarah) + Teen ADJACENT O-802 (Kevin)
 
      Voyage 2 (VoyageID=2): Island Hopper, 8-day, GLCL Majesty
        Booking 5 — Interior   — 2 Adults + Child + Infant Cot (Hafiz, Christine, Lucas, Sophie)
-       Booking 6 — Balcony    — 2 Seniors          (Elena, Roberto) + excursion bookings
+       Booking 6 — Balcony    — Adult couple + excursion incl. cancelled row (Elena, Marco Ferri)
        Booking 7 — Suite      — Adult + Chaperoned Youth Teen (Daniel, Zara)
-       Booking 8 — Ocean View — 2 Adults + Child   (Lim, Siti, Ryan) → CANCELLED < 48 h (FullForfeit)
+       Booking 8 — Ocean View — 2 Adults → CANCELLED < 48 h FullForfeit (Lim, Siti)
+
+   Booking 1 vs Booking 4 — both involve a teen, but:
+     Booking 1: teen shares the SAME cabin as adult guardian (same-cabin rule)
+     Booking 4: teen is in an ADJACENT cabin (extended adjacency lookup via CabinAdjacency)
+   Booking 2 vs Booking 6 — both use Balcony, but:
+     Booking 2: Senior pair exercising wheelchair + mobility services
+     Booking 6: Adult couple exercising excursions, including one Cancelled booking
+   Booking 3 vs Booking 5 — both have an infant, but:
+     Booking 3: Infant SharedBed → FinalFare = 15% × Adult fare
+     Booking 5: Infant Cot      → FinalFare = 50% × Child fare
 
    Trigger behaviour (automatic — no manual values needed):
      TR_BookingPassenger_BI_ValidateRules        sets FinalFare, FareRuleID, DailySupervisionFee
@@ -1500,16 +1741,18 @@ SELECT 'GLCL_DB MySQL database created successfully.' AS Message;
 /* ============================================================
    PASSENGER  (PassengerID 1–20)
    Ages shown are calculated at each passenger's voyage departure date.
+   PassengerID=12 (Ryan Lim) completed registration but did not proceed
+   to booking — represents a registered passenger with no active booking.
    ============================================================ */
 
 INSERT INTO Passenger
     (FullName, DateOfBirth, PassportNo, Nationality, Gender, ContactNo, Email)
 VALUES
--- Voyage 1 — Booking 1: Interior, 2 Adults
+-- Voyage 1 — Booking 1: Interior, Adult + Teen (same cabin)
 ('Ahmad Razif Hassan',  '1985-03-15', 'MY001A2345', 'Malaysian', 'Male',   '+60-12-345-6789',   'ahmad.razif@email.com'),        -- PassengerID=1,  Adult  age 41
-('Nurul Hana Yusof',   '1987-07-22', 'MY002B3456', 'Malaysian', 'Female', '+60-11-456-7890',   'nurulhana.yusof@email.com'),     -- PassengerID=2,  Adult  age 39
+('Amir Razif Hassan',   '2010-11-01', 'MY002B3456', 'Malaysian', 'Male',   NULL,                NULL),                            -- PassengerID=2,  Teen   age 15 (Ahmad's son)
 
--- Voyage 1 — Booking 2: Balcony, 2 Seniors
+-- Voyage 1 — Booking 2: Balcony, 2 Seniors + accessibility services
 ('James Whitmore',      '1958-04-10', 'GB003C4567', 'British',   'Male',   '+44-20-7890-1234',  'james.whitmore@email.com'),      -- PassengerID=3,  Senior age 68
 ('Margaret Whitmore',   '1960-11-05', 'GB004D5678', 'British',   'Female', '+44-20-7890-5678',  'margaret.whitmore@email.com'),   -- PassengerID=4,  Senior age 65
 
@@ -1522,10 +1765,12 @@ VALUES
 ('Sarah Chen',          '1975-10-05', 'MY008H9012', 'Malaysian', 'Female', '+60-16-789-0123',   'sarah.chen@email.com'),          -- PassengerID=8,  Adult  age 50
 ('Kevin Tan',           '2009-03-12', 'MY009I0123', 'Malaysian', 'Male',   '+60-16-890-1234',   'kevin.tan@email.com'),           -- PassengerID=9,  Teen   age 17
 
--- Voyage 2 — Booking 8: Ocean View (cancelled < 48 h)
+-- Voyage 2 — Booking 8: Ocean View, 2 Adults (cancelled < 48 h)
 ('Lim Wei Jian',        '1990-02-28', 'MY010J1234', 'Malaysian', 'Male',   '+60-12-901-2345',   'lim.weijian@email.com'),         -- PassengerID=10, Adult  age 36
 ('Siti Aishah Malik',   '1992-06-14', 'MY011K2345', 'Malaysian', 'Female', '+60-11-012-3456',   'siti.aishah@email.com'),         -- PassengerID=11, Adult  age 34
-('Ryan Lim',            '2016-09-03', 'MY012L3456', 'Malaysian', 'Male',   NULL,                NULL),                            -- PassengerID=12, Child  age 10
+
+-- Registered passenger with no active booking (completed registration, did not book)
+('Ryan Lim',            '2016-09-03', 'MY012L3456', 'Malaysian', 'Male',   NULL,                NULL),                            -- PassengerID=12, Child  age 9
 
 -- Voyage 2 — Booking 5: Interior, 2 Adults + Child + Infant (Cot)
 ('Hafiz Omar',          '1978-06-30', 'MY013M4567', 'Malaysian', 'Male',   '+60-17-123-4567',   'hafiz.omar@email.com'),          -- PassengerID=13, Adult  age 48
@@ -1533,9 +1778,9 @@ VALUES
 ('Lucas Dupont',        '2018-07-15', 'FR015O6789', 'French',    'Male',   NULL,                NULL),                            -- PassengerID=15, Child  age 8
 ('Sophie Dupont',       '2025-09-01', 'FR016P7890', 'French',    'Female', NULL,                NULL),                            -- PassengerID=16, Infant age 1
 
--- Voyage 2 — Booking 6: Balcony, 2 Seniors
-('Elena Marchetti',     '1960-02-14', 'IT017Q8901', 'Italian',   'Female', '+39-06-789-0123',   'elena.marchetti@email.com'),     -- PassengerID=17, Senior age 66
-('Roberto Marchetti',   '1958-08-20', 'IT018R9012', 'Italian',   'Male',   '+39-06-890-1234',   'roberto.marchetti@email.com'),   -- PassengerID=18, Senior age 68
+-- Voyage 2 — Booking 6: Balcony, Adult couple + excursions
+('Elena Ferri',         '1982-03-20', 'IT017Q8901', 'Italian',   'Female', '+39-06-789-0123',   'elena.ferri@email.com'),         -- PassengerID=17, Adult  age 44
+('Marco Ferri',         '1980-07-14', 'IT018R9012', 'Italian',   'Male',   '+39-06-890-1234',   'marco.ferri@email.com'),         -- PassengerID=18, Adult  age 46
 
 -- Voyage 2 — Booking 7: Suite, Adult + Chaperoned Youth Teen
 ('Zara Abdullah',       '2010-11-15', 'MY019S0123', 'Malaysian', 'Female', NULL,                'zara.guardian@email.com'),       -- PassengerID=19, Teen   age 15
@@ -1547,25 +1792,25 @@ VALUES
    TotalAmount starts at 0; TR_BookingPassenger_AI_UpdateBookingTotal
    recalculates it automatically after each BookingPassenger insert.
    Final totals for reference:
-     Booking 1: 2 000.00   Booking 5: 5 800.00
-     Booking 2: 3 000.00   Booking 6: 5 600.00
+     Booking 1: 1 750.00   Booking 5: 5 800.00
+     Booking 2: 3 000.00   Booking 6: 6 400.00
      Booking 3: 6 020.00   Booking 7: 9 000.00
-     Booking 4: 2 350.00   Booking 8: 7 000.00
+     Booking 4: 2 350.00   Booking 8: 5 400.00
    ============================================================ */
 
 INSERT INTO Booking
     (BookingDate, CustomerPassengerID, VoyageID, BookingStatus, TotalAmount, OriginalBookingID)
 VALUES
 -- Voyage 1 bookings (GLCL Majesty, departure 2026-08-01)
-('2026-06-10 10:00:00', 1,  1, 'Confirmed', 0, NULL),  -- BookingID=1  Ahmad    → Interior  (final: 2 000.00)
+('2026-06-10 10:00:00', 1,  1, 'Confirmed', 0, NULL),  -- BookingID=1  Ahmad    → Interior  (final: 1 750.00)
 ('2026-06-12 11:00:00', 3,  1, 'Confirmed', 0, NULL),  -- BookingID=2  James    → Balcony   (final: 3 000.00)
 ('2026-06-15 14:00:00', 5,  1, 'Confirmed', 0, NULL),  -- BookingID=3  Rajesh   → Suite     (final: 6 020.00)
 ('2026-06-20 09:30:00', 8,  1, 'Confirmed', 0, NULL),  -- BookingID=4  Sarah    → OV pair   (final: 2 350.00)
 -- Voyage 2 bookings (GLCL Majesty, departure 2026-09-10)
 ('2026-07-01 08:00:00', 13, 2, 'Confirmed', 0, NULL),  -- BookingID=5  Hafiz    → Interior  (final: 5 800.00)
-('2026-07-05 13:00:00', 17, 2, 'Confirmed', 0, NULL),  -- BookingID=6  Elena    → Balcony   (final: 5 600.00)
+('2026-07-05 13:00:00', 17, 2, 'Confirmed', 0, NULL),  -- BookingID=6  Elena    → Balcony   (final: 6 400.00)
 ('2026-07-10 15:00:00', 20, 2, 'Confirmed', 0, NULL),  -- BookingID=7  Daniel   → Suite     (final: 9 000.00)
-('2026-07-20 10:00:00', 10, 2, 'Confirmed', 0, NULL);  -- BookingID=8  Lim      → OV        (final: 7 000.00) → cancelled
+('2026-07-20 10:00:00', 10, 2, 'Confirmed', 0, NULL);  -- BookingID=8  Lim      → OV        (final: 5 400.00) → cancelled
 
 
 /* ============================================================
@@ -1581,11 +1826,11 @@ INSERT INTO BookingCabin
     (BookingID, CabinID, CabinPrice)
 VALUES
 -- Voyage 1
-(1, 1, 0),   -- BookingCabinID=1  Booking 1 → CabinID=1  I-801  Interior
-(2, 4, 0),   -- BookingCabinID=2  Booking 2 → CabinID=4  B-901  Balcony  (wheelchair-accessible)
-(3, 5, 0),   -- BookingCabinID=3  Booking 3 → CabinID=5  S-1001 Suite    (wheelchair-accessible)
+(1, 1, 0),   -- BookingCabinID=1  Booking 1 → CabinID=1  I-801  Interior  (Ahmad + Amir same cabin)
+(2, 4, 0),   -- BookingCabinID=2  Booking 2 → CabinID=4  B-901  Balcony   (wheelchair-accessible)
+(3, 5, 0),   -- BookingCabinID=3  Booking 3 → CabinID=5  S-1001 Suite     (wheelchair-accessible)
 (4, 3, 0),   -- BookingCabinID=4  Booking 4 → CabinID=3  O-803  OceanView (Sarah — guardian cabin)
-(4, 2, 0),   -- BookingCabinID=5  Booking 4 → CabinID=2  O-802  OceanView (Kevin  — teen cabin, adjacent to O-803)
+(4, 2, 0),   -- BookingCabinID=5  Booking 4 → CabinID=2  O-802  OceanView (Kevin — teen cabin, adjacent to O-803)
 -- Voyage 2
 (5, 1, 0),   -- BookingCabinID=6  Booking 5 → CabinID=1  I-801  Interior
 (6, 4, 0),   -- BookingCabinID=7  Booking 6 → CabinID=4  B-901  Balcony
@@ -1594,18 +1839,19 @@ VALUES
 
 
 /* ============================================================
-   BOOKING PASSENGER  (BookingPassengerID 1–20)
+   BOOKING PASSENGER  (BookingPassengerID 1–19)
    INSERT ORDER IS CRITICAL within each booking:
      Adults must be inserted before minors/infants in the same cabin.
      Step 6 of TR_BookingPassenger_BI_ValidateRules queries existing
      rows for an adult guardian when PassengerAge <= 17.
    Special cases:
+     Booking 1 — Ahmad (BPID 1) before Amir (BPID 2)
+                 so the same-cabin guardian check finds Ahmad already in I-801
      Booking 3 — adults (BPID 5,6) before infant (BPID 7)
      Booking 4 — Sarah in O-803 (BPID 8) before Kevin in O-802 (BPID 9)
                  so the adjacent-cabin guardian lookup succeeds
      Booking 5 — adults (BPID 10,11) before child (BPID 12) and infant (BPID 13)
      Booking 7 — Daniel (BPID 16) before Zara (BPID 17)
-     Booking 8 — adults (BPID 18,19) before child (BPID 20)
    FinalFare / FareRuleID / DailySupervisionFee: all computed by trigger.
    AgeCategoryID: 1=Infant  2=Child  3=Teen  4=Adult  5=Senior
    ============================================================ */
@@ -1614,10 +1860,11 @@ INSERT INTO BookingPassenger
     (BookingID, BookingCabinID, PassengerID, AgeCategoryID, FareRuleID,
      InfantBedOption, IsChaperonedYouth, DailySupervisionFee, FinalFare)
 VALUES
-/* --- Booking 1: Interior (CabinCategoryID=1), Voyage 1 — 2 Adults ------------------- */
-/* Trigger sets FinalFare: Adult Interior Voyage 1 = 1 000.00 each                       */
+/* --- Booking 1: Interior (CabinCategoryID=1), Voyage 1 — Adult + Teen (same cabin) -- */
+/* Ahmad inserted first; Amir's guardian check finds Ahmad in the same BookingCabinID.   */
+/* Trigger sets FinalFare: Adult Interior = 1 000.00; Teen Interior = 750.00            */
 (1, 1, 1,  4, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=1   Ahmad      Adult
-(1, 1, 2,  4, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=2   Nurul Hana Adult
+(1, 1, 2,  3, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=2   Amir       Teen   (same cabin as Ahmad)
 
 /* --- Booking 2: Balcony (CabinCategoryID=3), Voyage 1 — 2 Seniors ------------------- */
 /* Trigger sets FinalFare: Senior Balcony Voyage 1 = 1 500.00 each                       */
@@ -1649,10 +1896,10 @@ VALUES
 (5, 6, 15, 2, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=12  Lucas      Child
 (5, 6, 16, 1, NULL, 'Cot',           FALSE, 0, 0),   -- BPID=13  Sophie     Infant Cot
 
-/* --- Booking 6: Balcony (CabinCategoryID=3), Voyage 2 — 2 Seniors ------------------- */
-/* Trigger sets FinalFare: Senior Balcony Voyage 2 = 2 800.00 each                       */
-(6, 7, 17, 5, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=14  Elena      Senior
-(6, 7, 18, 5, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=15  Roberto    Senior
+/* --- Booking 6: Balcony (CabinCategoryID=3), Voyage 2 — Adult couple --------------- */
+/* Trigger sets FinalFare: Adult Balcony Voyage 2 = 3 200.00 each                       */
+(6, 7, 17, 4, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=14  Elena      Adult
+(6, 7, 18, 4, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=15  Marco      Adult
 
 /* --- Booking 7: Suite (CabinCategoryID=4), Voyage 2 — Adult then Chaperoned Teen ---- */
 /* IsChaperonedYouth=TRUE bypasses the guardian check (Step 6 skipped).                  */
@@ -1662,12 +1909,10 @@ VALUES
 (7, 8, 20, 4, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=16  Daniel     Adult
 (7, 8, 19, 3, NULL, 'NotApplicable', TRUE,  0, 0),   -- BPID=17  Zara       Teen   Chaperoned Youth
 
-/* --- Booking 8: OceanView (CabinCategoryID=2), Voyage 2 — booking to be cancelled --- */
-/* Adults first for child guardian check.                                                 */
-/* Trigger sets FinalFare: Adult OV = 2 700.00; Child OV = 1 600.00                    */
+/* --- Booking 8: OceanView (CabinCategoryID=2), Voyage 2 — 2 Adults, to be cancelled  */
+/* Trigger sets FinalFare: Adult OV Voyage 2 = 2 700.00 each                            */
 (8, 9, 10, 4, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=18  Lim Wei Jian Adult
-(8, 9, 11, 4, NULL, 'NotApplicable', FALSE, 0, 0),   -- BPID=19  Siti Aishah  Adult
-(8, 9, 12, 2, NULL, 'NotApplicable', FALSE, 0, 0);   -- BPID=20  Ryan Lim     Child
+(8, 9, 11, 4, NULL, 'NotApplicable', FALSE, 0, 0);   -- BPID=19  Siti Aishah  Adult
 
 
 /* ============================================================
@@ -1675,6 +1920,7 @@ VALUES
    IsOverLimit is set automatically by TR_BookingBaggage_BI_ValidateLimit
    by comparing WeightKG against CruiseVoyage.BaggageWeightLimitKG.
      Voyage 1 limit = 25 kg  |  Voyage 2 limit = 30 kg
+   Infants (Emma BPID=7, Sophie BPID=13) have no baggage entry.
    ExcessFee remains 0 (computed charge handled at application layer).
    ============================================================ */
 
@@ -1682,38 +1928,37 @@ INSERT INTO BookingBaggage
     (BookingPassengerID, WeightKG, IsOverLimit, ExcessFee)
 VALUES
 -- Booking 1 passengers — Voyage 1 (25 kg limit)
-(1,  22.00, FALSE, 0),   -- Ahmad:      22.0 kg  ✓ within limit
-(2,  27.50, FALSE, 0),   -- Nurul Hana: 27.5 kg  → trigger sets IsOverLimit=TRUE
+(1,  22.00, FALSE, 0),   -- Ahmad:  22.0 kg  ✓ within limit
+(2,   9.50, FALSE, 0),   -- Amir:    9.5 kg  ✓ (teen, light luggage)
 
 -- Booking 2 passengers — Voyage 1 (25 kg limit)
-(3,  18.00, FALSE, 0),   -- James:      18.0 kg  ✓
-(4,  20.00, FALSE, 0),   -- Margaret:   20.0 kg  ✓
+(3,  18.00, FALSE, 0),   -- James:    18.0 kg  ✓
+(4,  26.50, FALSE, 0),   -- Margaret: 26.5 kg  → trigger sets IsOverLimit=TRUE
 
 -- Booking 3 passengers — Voyage 1 (25 kg limit)
-(5,  24.00, FALSE, 0),   -- Rajesh:     24.0 kg  ✓
-(6,  19.50, FALSE, 0),   -- Priya:      19.5 kg  ✓
+(5,  24.00, FALSE, 0),   -- Rajesh:   24.0 kg  ✓
+(6,  19.50, FALSE, 0),   -- Priya:    19.5 kg  ✓
 
 -- Booking 4 passengers — Voyage 1 (25 kg limit)
-(8,  26.00, FALSE, 0),   -- Sarah:      26.0 kg  → trigger sets IsOverLimit=TRUE
-(9,  12.00, FALSE, 0),   -- Kevin:      12.0 kg  ✓
+(8,  26.00, FALSE, 0),   -- Sarah:    26.0 kg  → trigger sets IsOverLimit=TRUE
+(9,  12.00, FALSE, 0),   -- Kevin:    12.0 kg  ✓
 
 -- Booking 5 passengers — Voyage 2 (30 kg limit)
-(10, 28.00, FALSE, 0),   -- Hafiz:      28.0 kg  ✓
-(11, 33.50, FALSE, 0),   -- Christine:  33.5 kg  → trigger sets IsOverLimit=TRUE
-(12,  8.50, FALSE, 0),   -- Lucas:       8.5 kg  ✓
+(10, 28.00, FALSE, 0),   -- Hafiz:     28.0 kg  ✓
+(11, 33.50, FALSE, 0),   -- Christine: 33.5 kg  → trigger sets IsOverLimit=TRUE
+(12,  8.50, FALSE, 0),   -- Lucas:      8.5 kg  ✓
 
 -- Booking 6 passengers — Voyage 2 (30 kg limit)
-(14, 22.00, FALSE, 0),   -- Elena:      22.0 kg  ✓
-(15, 25.00, FALSE, 0),   -- Roberto:    25.0 kg  ✓
+(14, 27.00, FALSE, 0),   -- Elena:     27.0 kg  ✓
+(15, 31.50, FALSE, 0),   -- Marco:     31.5 kg  → trigger sets IsOverLimit=TRUE
 
 -- Booking 7 passengers — Voyage 2 (30 kg limit)
-(16, 25.00, FALSE, 0),   -- Daniel:     25.0 kg  ✓
-(17, 15.00, FALSE, 0),   -- Zara:       15.0 kg  ✓
+(16, 25.00, FALSE, 0),   -- Daniel:    25.0 kg  ✓
+(17, 15.00, FALSE, 0),   -- Zara:      15.0 kg  ✓
 
 -- Booking 8 passengers — Voyage 2 (30 kg limit, booking will be cancelled)
 (18, 29.00, FALSE, 0),   -- Lim Wei Jian: 29.0 kg  ✓
-(19, 31.00, FALSE, 0),   -- Siti Aishah:  31.0 kg  → trigger sets IsOverLimit=TRUE
-(20, 10.00, FALSE, 0);   -- Ryan Lim:     10.0 kg  ✓
+(19, 31.00, FALSE, 0);   -- Siti Aishah:  31.0 kg  → trigger sets IsOverLimit=TRUE
 
 
 /* ============================================================
@@ -1728,6 +1973,8 @@ VALUES
 INSERT INTO PassengerSpecialService
     (BookingPassengerID, ServiceID, RequestStatus, Fee)
 VALUES
+-- Amir Razif (BPID=2, Teen age 15, Booking 1): Teen Exclusive Club
+(2,  2, 'Approved',  0.00),
 -- James Whitmore (BPID=3, Senior, Booking 2): wheelchair-accessible cabin
 (3,  3, 'Approved',  0.00),
 -- Margaret Whitmore (BPID=4, Senior, Booking 2): mobility assistance
@@ -1739,9 +1986,7 @@ VALUES
 -- Zara Abdullah (BPID=17, Teen age 15, Booking 7): Chaperoned Youth Supervision
 (17, 5, 'Approved',  50.00),
 -- Zara Abdullah (BPID=17): also enrolled in Teen Exclusive Club
-(17, 2, 'Approved',  0.00),
--- Ryan Lim (BPID=20, Child age 10, Booking 8 — cancelled): Onboard Childcare
-(20, 1, 'Cancelled', 35.00);
+(17, 2, 'Approved',  0.00);
 
 
 /* ============================================================
@@ -1753,26 +1998,30 @@ VALUES
      4 = Phuket    Old Phuket Town Heritage Walk  ( 50.00)
      5 = Krabi     Railay Beach Longtail Boat     ( 90.00)
      6 = Krabi     Tiger Cave Temple Hike         ( 60.00)
-   NOTE: VoyageExcursionID=6 (Tiger Cave Temple Hike) receives NO
-         bookings, supporting the "excursions with no sales" query.
+   Coverage:
+     VEX 1: Hafiz (Booked) + Daniel (Booked)  — popular excursion, two independent bookings
+     VEX 2: Christine (Booked)                — single booking
+     VEX 3: Elena (Cancelled)                 — demonstrates ExcursionStatus='Cancelled'
+     VEX 4: Hafiz (Booked)                    — single booking, different port from VEX 1
+     VEX 5: Marco (Booked) + Daniel (Booked)  — popular excursion, two independent bookings
+     VEX 6: no bookings                       — supports "excursions with no sales" query
    ============================================================ */
 
 INSERT INTO BookingExcursion
     (BookingPassengerID, VoyageExcursionID, BookingDateTime, ExcursionStatus, AmountPaid)
 VALUES
--- Hafiz (BPID=10, Booking 5): Langkawi Mangrove Kayak + Phuket Phi Phi Snorkel
-(10, 1, '2026-07-01 08:30:00', 'Booked', 75.00),
-(10, 3, '2026-07-01 08:35:00', 'Booked', 110.00),
--- Christine (BPID=11, Booking 5): Langkawi Eagle Square & Cable Car
-(11, 2, '2026-07-01 08:40:00', 'Booked', 95.00),
--- Elena (BPID=14, Booking 6): Phuket Old Town Heritage Walk + Krabi Railay Beach
-(14, 4, '2026-07-05 13:20:00', 'Booked', 50.00),
-(14, 5, '2026-07-05 13:25:00', 'Booked', 90.00),
--- Roberto (BPID=15, Booking 6): Krabi Railay Beach
-(15, 5, '2026-07-05 13:30:00', 'Booked', 90.00),
--- Daniel (BPID=16, Booking 7): Langkawi Mangrove Kayak + Phuket Phi Phi Snorkel
-(16, 1, '2026-07-10 15:20:00', 'Booked', 75.00),
-(16, 3, '2026-07-10 15:25:00', 'Booked', 110.00);
+-- Hafiz (BPID=10, Booking 5): Langkawi Mangrove Kayak + Phuket Old Town Heritage Walk
+(10, 1, '2026-07-01 08:30:00', 'Booked',    75.00),
+(10, 4, '2026-07-01 08:35:00', 'Booked',    50.00),
+-- Christine (BPID=11, Booking 5): Langkawi Eagle Square & Cable Car Tour
+(11, 2, '2026-07-01 08:40:00', 'Booked',    95.00),
+-- Elena Ferri (BPID=14, Booking 6): Phi Phi Island Snorkel — booked then cancelled
+(14, 3, '2026-07-05 13:20:00', 'Cancelled', 110.00),
+-- Marco Ferri (BPID=15, Booking 6): Krabi Railay Beach Longtail Boat Trip
+(15, 5, '2026-07-05 13:30:00', 'Booked',    90.00),
+-- Daniel Wong (BPID=16, Booking 7): Langkawi Mangrove Kayak + Krabi Railay Beach
+(16, 1, '2026-07-10 15:20:00', 'Booked',    75.00),
+(16, 5, '2026-07-10 15:25:00', 'Booked',    90.00);
 -- VoyageExcursionID=6 (Tiger Cave Temple Hike) intentionally left with zero bookings.
 
 
@@ -1785,7 +2034,7 @@ VALUES
      HoursUntilDeparture = TIMESTAMPDIFF(HOUR,
          '2026-09-09 10:00:00', '2026-09-10 17:00:00') = 31 h  (≤ 48)
      Policy matched: OperatorID=1, HoursBeforeDeparture=48, Type='FullForfeit'
-     → PenaltyAmount = Booking.TotalAmount = 7 000.00
+     → PenaltyAmount = Booking.TotalAmount = 5 400.00
      → RefundAmount  = 0.00
 
    TR_BookingCancellation_AI_UpdateBookingStatus then sets
@@ -1798,7 +2047,7 @@ VALUES
 (8,
  '2026-09-09 10:00:00',
  'Passengers unable to travel due to an unforeseen medical emergency.',
- 0,        -- trigger overwrites: 7 000.00 (FullForfeit)
+ 0,        -- trigger overwrites: 5 400.00 (FullForfeit)
  0,        -- trigger overwrites: 0.00    (no refund)
  'Reservations Team');
 
@@ -1840,13 +2089,13 @@ VALUES
 INSERT INTO Payment
     (BookingID, PaymentDateTime, Amount, PaymentMethod, PaymentStatus, TransactionReference)
 VALUES
-(1, '2026-06-10 10:15:00',  2000.00, 'Credit Card',   'Paid',    'TXN-20260610-001'),
+(1, '2026-06-10 10:15:00',  1750.00, 'Credit Card',   'Paid',    'TXN-20260610-001'),
 (2, '2026-06-12 11:20:00',  3000.00, 'Bank Transfer', 'Paid',    'TXN-20260612-002'),
 (3, '2026-06-15 14:30:00',  6020.00, 'Credit Card',   'Paid',    'TXN-20260615-003'),
 (4, '2026-06-20 09:45:00',  2350.00, 'Debit Card',    'Paid',    'TXN-20260620-004'),
 (5, '2026-07-01 08:20:00',  5800.00, 'Credit Card',   'Paid',    'TXN-20260701-005'),
-(6, '2026-07-05 13:15:00',  5600.00, 'Bank Transfer', 'Paid',    'TXN-20260705-006'),
+(6, '2026-07-05 13:15:00',  6400.00, 'Bank Transfer', 'Paid',    'TXN-20260705-006'),
 (7, '2026-07-10 15:30:00',  9000.00, 'Credit Card',   'Paid',    'TXN-20260710-007'),
-(8, '2026-07-20 10:20:00',  7000.00, 'Debit Card',    'Paid',    'TXN-20260720-008');
+(8, '2026-07-20 10:20:00',  5400.00, 'Debit Card',    'Paid',    'TXN-20260720-008');
 
 SELECT 'GLCL_DB test data loaded successfully.' AS Message;

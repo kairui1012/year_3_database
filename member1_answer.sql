@@ -150,38 +150,41 @@ DELIMITER ;
 -- (For round-trips the departure and arrival port are the
 --  same home port; we filter on first stop = last stop.)
 -- -------------------------------------------------------
+-- Round-trip sailings only
 SELECT
     v.VoyageID,
-    s.ShipName,
-    co.OperatorName,
     r.RouteName,
-    p_dep.PortName          AS DeparturePort,
-    p_arr.PortName          AS ArrivalPort,
+    p_dep.PortName AS DeparturePort,
+    p_arr.PortName AS ArrivalPort,
     v.DepartureDateTime,
-    v.ArrivalDateTime,
-    v.VoyageLengthDays      AS DurationDays,
-    v.VoyageStatus
-FROM CruiseVoyage  v
-INNER JOIN CruiseShip     s        ON v.ShipID    = s.ShipID
-INNER JOIN CruiseOperator co       ON s.OperatorID = co.OperatorID
-INNER JOIN CruiseRoute    r        ON v.RouteID   = r.RouteID
--- First stop = departure port
-INNER JOIN RoutePort      rp_dep   ON r.RouteID   = rp_dep.RouteID
-    AND rp_dep.StopSequence = 1
-INNER JOIN Port           p_dep    ON rp_dep.PortID = p_dep.PortID
--- Last stop = arrival port
+    v.ArrivalDateTime
+FROM CruiseVoyage v
+INNER JOIN CruiseRoute r ON v.RouteID = r.RouteID
+
+-- First port (departure)
+INNER JOIN RoutePort rp_dep 
+    ON r.RouteID = rp_dep.RouteID 
+   AND rp_dep.StopSequence = 1
+INNER JOIN Port p_dep 
+    ON rp_dep.PortID = p_dep.PortID
+
+-- Last port (arrival)
 INNER JOIN (
     SELECT RouteID, MAX(StopSequence) AS LastSeq
-    FROM   RoutePort
-    GROUP  BY RouteID
-)                         last_seq ON r.RouteID = last_seq.RouteID
-INNER JOIN RoutePort      rp_arr   ON r.RouteID   = rp_arr.RouteID
-    AND rp_arr.StopSequence = last_seq.LastSeq
-INNER JOIN Port           p_arr    ON rp_arr.PortID = p_arr.PortID
-WHERE r.RouteType = 'Round-trip'
-  AND DATE(v.DepartureDateTime) BETWEEN '2026-01-01' AND '2026-12-31'
-  AND p_dep.PortName = 'Penang Port'
-  AND p_arr.PortName = 'Penang Port'
+    FROM RoutePort
+    GROUP BY RouteID
+) last_seq 
+    ON r.RouteID = last_seq.RouteID
+
+INNER JOIN RoutePort rp_arr 
+    ON r.RouteID = rp_arr.RouteID 
+   AND rp_arr.StopSequence = last_seq.LastSeq
+INNER JOIN Port p_arr 
+    ON rp_arr.PortID = p_arr.PortID
+
+WHERE p_dep.PortID = p_arr.PortID
+  AND DATE(v.DepartureDateTime) 
+      BETWEEN '2026-01-01' AND '2026-12-31'
 ORDER BY v.DepartureDateTime;
 
 -- -------------------------------------------------------
@@ -191,27 +194,22 @@ ORDER BY v.DepartureDateTime;
 -- cruise operator on a single voyage.
 -- -------------------------------------------------------
 SELECT
-    s.ShipID                                            AS ShipCode,
-    cc.CabinCategoryID                                  AS CabinCategoryCode,
-    cc.CategoryName                                     AS CabinCategory,
-    SUM(bp.FinalFare)                                   AS CategoryRevenue,
-    SUM(SUM(bp.FinalFare))
-        OVER (PARTITION BY s.ShipID)                    AS TotalShipRevenue
-FROM Booking        b
-INNER JOIN CruiseVoyage  v    ON b.VoyageID        = v.VoyageID
-INNER JOIN CruiseShip    s    ON v.ShipID          = s.ShipID
-INNER JOIN CruiseOperator co  ON s.OperatorID      = co.OperatorID
-INNER JOIN BookingCabin  bc   ON bc.BookingID      = b.BookingID
-INNER JOIN Cabin         c    ON bc.CabinID        = c.CabinID
-INNER JOIN CabinCategory cc   ON c.CabinCategoryID = cc.CabinCategoryID
+    s.ShipID AS ShipCode,
+    cc.CabinCategoryID AS CabinCategoryCode,
+    SUM(bp.FinalFare) AS CategoryRevenue,
+    SUM(SUM(bp.FinalFare)) OVER (PARTITION BY s.ShipID) AS TotalShipRevenue
+FROM Booking b
+INNER JOIN CruiseVoyage v ON b.VoyageID = v.VoyageID
+INNER JOIN CruiseShip s ON v.ShipID = s.ShipID
+INNER JOIN CruiseOperator co ON s.OperatorID = co.OperatorID
+INNER JOIN BookingCabin bc ON bc.BookingID = b.BookingID
+INNER JOIN Cabin c ON bc.CabinID = c.CabinID
+INNER JOIN CabinCategory cc ON c.CabinCategoryID = cc.CabinCategoryID
 INNER JOIN BookingPassenger bp ON bp.BookingCabinID = bc.BookingCabinID
-WHERE co.OperatorName   = 'Global Luxury Cruise Lines'
-  AND v.VoyageID        = 1
-  AND b.BookingStatus   IN ('Confirmed', 'Completed')
-GROUP BY
-    s.ShipID,
-    cc.CabinCategoryID,
-    cc.CategoryName
+WHERE co.OperatorName = 'Global Luxury Cruise Lines'
+  AND v.VoyageID = 1
+  AND b.BookingStatus IN ('Confirmed', 'Completed')
+GROUP BY s.ShipID, cc.CabinCategoryID
 ORDER BY cc.CabinCategoryID;
 
 -- -------------------------------------------------------
