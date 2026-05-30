@@ -1,6 +1,6 @@
 /*
     GLOBAL LUXURY CRUISE LINES (GLCL)
-    Member 3 — Q1b: Optimization Strategy
+    Member 3 - Q1b: Optimization Strategy
 
     Strategy: Reporting views to encapsulate repeated deep join
     chains across the schema.
@@ -22,7 +22,7 @@
 USE GLCL_DB;
 
 /* =========================================================
-   Q1b — OPTIMIZATION STRATEGY
+   Q1b - OPTIMIZATION STRATEGY
    ========================================================= */
 
 -- Encapsulates the full 10-table passenger booking detail path.

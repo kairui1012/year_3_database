@@ -1,6 +1,6 @@
 /*
     GLOBAL LUXURY CRUISE LINES (GLCL)
-    Member 1 — Q1b: Optimization Strategy
+    Member 1 - Q1b: Optimization Strategy
 
     Strategy: Composite indexes targeting the query paths
     executed inside the system's triggers, particularly
@@ -15,7 +15,7 @@
 USE GLCL_DB;
 
 /* =========================================================
-   Q1b — OPTIMIZATION STRATEGY
+   Q1b - OPTIMIZATION STRATEGY
    ========================================================= */
 
 -- Fare lookup: filters (VoyageID, CabinCategoryID, AgeCategoryID),

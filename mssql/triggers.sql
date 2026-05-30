@@ -26,15 +26,15 @@ IF OBJECT_ID('TR_BookingCancellation_AI_UpdateBookingStatus',          'TR') IS 
 IF OBJECT_ID('TR_BookingPassenger_AI_UpdateBookingTotal',              'TR') IS NOT NULL DROP TRIGGER   TR_BookingPassenger_AI_UpdateBookingTotal;
 
 /* ============================================================
-   SECTION 8: FUNCTION AND TRIGGERS
+   TRIGGERS
    ============================================================
-   6 Schema Constraints (CHECK constraints in Sections 1–7):
-     1. CK_Cabin_MaxOccupancy                  — enforces max 5 passengers per cabin
-     2. CK_CruiseVoyage_ArrivalAfterDeparture  — arrival must be after departure
-     3. CK_BookingPassenger_InfantBedOption    — valid bed options for infants
-     4. CK_Booking_Status                      — restricts to valid booking states
-     5. CK_CancellationPolicy_PenaltyType      — restricts to valid penalty types
-     6. CK_AgeCategory_AgeRange                — ensures MinAge <= MaxAge
+   6 Schema Constraints (CHECK constraints in Sections 1-7):
+     1. CK_Cabin_MaxOccupancy                  - enforces max 5 passengers per cabin
+     2. CK_CruiseVoyage_ArrivalAfterDeparture  - arrival must be after departure
+     3. CK_BookingPassenger_InfantBedOption    - valid bed options for infants
+     4. CK_Booking_Status                      - restricts to valid booking states
+     5. CK_CancellationPolicy_PenaltyType      - restricts to valid penalty types
+     6. CK_AgeCategory_AgeRange                - ensures MinAge <= MaxAge
 
    6 Triggers (INSTEAD OF INSERT / AFTER INSERT):
      1. TR_BookingCabin_BI_PreventDoubleBooking
@@ -47,7 +47,7 @@ IF OBJECT_ID('TR_BookingPassenger_AI_UpdateBookingTotal',              'TR') IS 
 
 /* ---------------------------------------------------------------
    Helper function: fn_CalculateAge
-   Replicates MySQL TIMESTAMPDIFF(YEAR, ...) — subtracts 1 if the
+   Replicates MySQL DATEDIFF(YEAR, ...) - subtracts 1 if the
    birthday has not yet occurred in the reference year.
    --------------------------------------------------------------- */
 EXEC(N'CREATE FUNCTION dbo.fn_CalculateAge(
@@ -70,7 +70,7 @@ END;
 
 /* ---------------------------------------------------------------
    Trigger 1: TR_BookingCabin_BI_PreventDoubleBooking
-   Converted from BEFORE INSERT → INSTEAD OF INSERT
+   Converted from BEFORE INSERT -> INSTEAD OF INSERT
    (validation only; no column values are modified)
    --------------------------------------------------------------- */
 EXEC(N'CREATE TRIGGER TR_BookingCabin_BI_PreventDoubleBooking
@@ -126,7 +126,7 @@ END;
 
 /* ---------------------------------------------------------------
    Trigger 2: TR_BookingPassenger_BI_ValidateRules
-   Converted from BEFORE INSERT → INSTEAD OF INSERT
+   Converted from BEFORE INSERT -> INSTEAD OF INSERT
    (validates rules AND computes DailySupervisionFee, FareRuleID,
    FinalFare before performing the actual INSERT)
    --------------------------------------------------------------- */
@@ -350,7 +350,7 @@ END;
 
 /* ---------------------------------------------------------------
    Trigger 3: TR_BookingBaggage_BI_ValidateLimit
-   Converted from BEFORE INSERT → INSTEAD OF INSERT
+   Converted from BEFORE INSERT -> INSTEAD OF INSERT
    (computes IsOverLimit before performing the actual INSERT)
    --------------------------------------------------------------- */
 EXEC(N'CREATE TRIGGER TR_BookingBaggage_BI_ValidateLimit
@@ -390,7 +390,7 @@ END;
 
 /* ---------------------------------------------------------------
    Trigger 4: TR_BookingCancellation_BI_ApplyPenalty
-   Converted from BEFORE INSERT → INSTEAD OF INSERT
+   Converted from BEFORE INSERT -> INSTEAD OF INSERT
    (computes PenaltyAmount and RefundAmount before performing the
    actual INSERT; AFTER trigger 5 then updates Booking status)
    --------------------------------------------------------------- */
@@ -485,7 +485,7 @@ END;
 
 /* ---------------------------------------------------------------
    Trigger 5: TR_BookingCancellation_AI_UpdateBookingStatus
-   AFTER INSERT — fires after Trigger 4's internal INSERT
+   AFTER INSERT - fires after Trigger 4's internal INSERT
    --------------------------------------------------------------- */
 EXEC(N'CREATE TRIGGER TR_BookingCancellation_AI_UpdateBookingStatus
 ON BookingCancellation
@@ -502,7 +502,7 @@ END;
 
 /* ---------------------------------------------------------------
    Trigger 6: TR_BookingPassenger_AI_UpdateBookingTotal
-   AFTER INSERT — fires after Trigger 2's internal INSERT
+   AFTER INSERT - fires after Trigger 2's internal INSERT
    --------------------------------------------------------------- */
 EXEC(N'CREATE TRIGGER TR_BookingPassenger_AI_UpdateBookingTotal
 ON BookingPassenger

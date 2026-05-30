@@ -1,6 +1,6 @@
 /*
     GLOBAL LUXURY CRUISE LINES (GLCL)
-    Member 2 — Q1b: Optimization Strategy
+    Member 2 - Q1b: Optimization Strategy
 
     Strategy: Selective denormalization for historical price preservation.
 
@@ -16,7 +16,7 @@
 USE GLCL_DB;
 
 /* =========================================================
-   Q1b — OPTIMIZATION STRATEGY
+   Q1b - OPTIMIZATION STRATEGY
    ========================================================= */
 
 -- Snapshot the catalogue fee at booking time so historical

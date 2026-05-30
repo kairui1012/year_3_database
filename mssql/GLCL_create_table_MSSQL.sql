@@ -38,7 +38,7 @@ USE GLCL_DB;
  * CruiseOperator
  * Stores each cruise operator managed by GLCL.
  * AllowsChaperonedYouth controls whether the operator offers
- * the supervised teen travel programme for ages 15–17.
+ * the supervised teen travel programme for ages 15-17.
  */
 CREATE TABLE CruiseOperator (
     OperatorID             INT           IDENTITY(1,1) PRIMARY KEY,
@@ -104,10 +104,10 @@ CREATE TABLE Cabin (
 /*
  * CabinAdjacency
  * Records which cabins are physically adjacent or connecting.
- * Business rule: a minor (age ≤ 17) may occupy a cabin without
+ * Business rule: a minor (age <= 17) may occupy a cabin without
  * an adult in the same cabin ONLY if an adult guardian is booked
  * in an adjacent or connecting cabin on the same voyage.
- * Rows must be inserted bidirectionally (A→B and B→A).
+ * Rows must be inserted bidirectionally (A->B and B->A).
  */
 CREATE TABLE CabinAdjacency (
     CabinAdjacencyID  INT          IDENTITY(1,1) PRIMARY KEY,
@@ -218,7 +218,7 @@ CREATE TABLE Passenger (
 /*
  * AgeCategory
  * Lookup table for GLCL fare age bands:
- *   Infant (0–1) | Child (2–12) | Teen (13–17) | Adult (18–59) | Senior (60+)
+ *   Infant (0-1) | Child (2-12) | Teen (13-17) | Adult (18-59) | Senior (60+)
  * MaxAge is NULL for the Senior category (no upper bound).
  */
 CREATE TABLE AgeCategory (
@@ -278,7 +278,7 @@ CREATE TABLE BookingCabin (
  * FareRule
  * Defines the base fare for a (Voyage, CabinCategory, AgeCategory) combination.
  * EffectiveFrom/EffectiveTo allow time-limited fare changes.
- * Infant fares are NOT stored here — they are computed dynamically from
+ * Infant fares are NOT stored here - they are computed dynamically from
  * Adult and Child fares in the BookingPassenger insert trigger.
  */
 CREATE TABLE FareRule (

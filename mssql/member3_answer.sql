@@ -1,17 +1,17 @@
 /*
     GLOBAL LUXURY CRUISE LINES (GLCL)
-    Member 3 — Answers
+    Member 3 - Answers
 
     Covers:
     - Q1c : Constraint & Trigger description
     - Q2c : Stored Procedure
-    - Q2d : Queries xv – xxi
+    - Q2d : Queries xv - xxi
 */
 
 USE GLCL_DB;
 
 /* =========================================================
-   Q1c — CONSTRAINT DESCRIPTION
+   Q1c - CONSTRAINT DESCRIPTION
    Constraint: CK_BookingPassenger_InfantBedOption
                (BookingPassenger table)
 
@@ -42,7 +42,7 @@ USE GLCL_DB;
              2. Joins CancellationPolicy for the operator to find
                 the applicable penalty rule.
              3. Calculates hours remaining until departure.
-             4. If ≤ 48 hours and policy is FullForfeit, sets
+             4. If <= 48 hours and policy is FullForfeit, sets
                 PenaltyAmount = TotalAmount and RefundAmount = 0.
              5. If policy is Percentage, calculates proportional
                 penalty and refund.
@@ -54,39 +54,62 @@ USE GLCL_DB;
    ========================================================= */
 
 /* =========================================================
-   Q2c — STORED PROCEDURE
+   Q2c - STORED PROCEDURE
    sp_ProcessCancellation
 
-   Purpose:
-   Provides a single, validated entry point for cancelling a
-   booking. Rather than calling INSERT on BookingCancellation
-   directly (which would bypass status and departure checks
-   at the application layer), this procedure:
-     1. Validates the booking exists and is in a cancellable
-        state (not already Cancelled or Completed).
-     2. Validates that the voyage has not already departed.
-     3. Inserts the BookingCancellation row (the existing
-        BEFORE INSERT trigger then handles penalty/refund
-        calculation and the AFTER INSERT trigger updates
-        Booking.BookingStatus).
-     4. Returns the calculated PenaltyAmount and RefundAmount
-        as OUT parameters so the caller can display them to
-        the user immediately.
+   BUSINESS REQUIREMENT
+   Cancelling a booking is not a single INSERT. The system must:
+     a. Confirm the booking exists and is still cancellable
+        (not already Cancelled or Completed).
+     b. Confirm the voyage has not already departed.
+     c. Insert a BookingCancellation row (the existing triggers
+        then compute the penalty/refund and flip the Booking
+        status to 'Cancelled').
+     d. Return the penalty and refund to the caller so the
+        agent can read them out to the customer immediately.
 
-   Usage:
+   WHY A STORED PROCEDURE (vs other approaches)
+   1. vs. letting the application INSERT directly:
+      If the application forgets the status check or the
+      departure check, a Cancelled booking could be cancelled
+      again, or a sailed voyage could be cancelled. The SP is
+      the single guarded gateway - these mistakes cannot
+      happen.
+   2. vs. a VIEW:
+      Views cannot perform INSERTs or return OUTPUT values.
+   3. vs. a FUNCTION:
+      Functions cannot modify data (no INSERT) and cannot use
+      THROW for validation. This rules them out entirely for
+      a write operation.
+   4. vs. relying on triggers alone:
+      The triggers calculate the penalty correctly but cannot
+      reject the operation with a friendly error such as
+      "Booking already cancelled" - the SP wraps that
+      pre-check around the trigger logic.
+
+   HOW TO USE
+       DECLARE @penalty DECIMAL(12,2), @refund DECIMAL(12,2);
        EXEC sp_ProcessCancellation
-            @BookingID = 1,
-            @Reason = 'Change of plans',
+            @BookingID   = 1,
+            @Reason      = 'Change of plans',
             @ProcessedBy = 'Agent01',
-            @PenaltyAmt = @penalty OUTPUT,
-            @RefundAmt = @refund OUTPUT;
+            @PenaltyAmt  = @penalty OUTPUT,
+            @RefundAmt   = @refund  OUTPUT;
        SELECT @penalty AS Penalty, @refund AS Refund;
+
+   BENEFITS
+   - One guarded entry point for cancellations
+   - Triggers still do the penalty math - no duplicated logic
+   - OUTPUT parameters return both amounts in one call
+   - Parameterised => safe from SQL injection
+   - Only EXECUTE permission needed; no direct table writes
    ========================================================= */
 
 IF OBJECT_ID('sp_ProcessCancellation', 'P') IS NOT NULL
     DROP PROCEDURE sp_ProcessCancellation;
+GO
 
-EXEC(N'CREATE PROCEDURE sp_ProcessCancellation
+CREATE PROCEDURE sp_ProcessCancellation
     @BookingID   INT,
     @Reason      VARCHAR(255),
     @ProcessedBy VARCHAR(100),
@@ -108,32 +131,32 @@ BEGIN
     WHERE  b.BookingID = @BookingID;
 
     IF @BookingStatus IS NULL
-        THROW 50000, ''Booking not found.'', 1;
+        THROW 50000, 'Booking not found.', 1;
 
     -- Step 2: reject if already in a terminal state
-    IF @BookingStatus IN (''Cancelled'', ''Completed'')
-        THROW 50000, ''This booking cannot be cancelled in its current status.'', 1;
+    IF @BookingStatus IN ('Cancelled', 'Completed')
+        THROW 50000, 'This booking cannot be cancelled in its current status.', 1;
 
     -- Step 3: reject if voyage has already departed
     SET @HoursLeft = DATEDIFF(HOUR, GETDATE(), @DepartureTime);
 
     IF @HoursLeft < 0
-        THROW 50000, ''Cannot cancel a voyage that has already departed.'', 1;
+        THROW 50000, 'Cannot cancel a voyage that has already departed.', 1;
 
-    -- Step 4: insert cancellation — triggers handle penalty calc + status update
+    -- Step 4: insert cancellation - triggers handle penalty calc + status update
     INSERT INTO BookingCancellation (BookingID, Reason, ProcessedBy)
     VALUES (@BookingID, @Reason, @ProcessedBy);
 
     -- Step 5: return the calculated amounts to the caller
     SELECT @PenaltyAmt = PenaltyAmount,
-           @RefundAmt = RefundAmount
+           @RefundAmt  = RefundAmount
     FROM   BookingCancellation
     WHERE  BookingID = @BookingID;
 END;
-');
+GO
 
 /* =========================================================
-   Q2d — QUERIES
+   Q2d - QUERIES
    ========================================================= */
 
 -- -------------------------------------------------------
@@ -285,7 +308,7 @@ WHERE bp.IsChaperonedYouth = 1
 ORDER BY p.FullName;
 
 -- -------------------------------------------------------
--- Query xxi  (additional — own design)
+-- Query xxi  (additional - own design)
 -- Cancellation revenue impact analysis by cruise operator.
 -- Shows total cancellations, penalty fees retained,
 -- refunds issued, and the percentage of original booking

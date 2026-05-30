@@ -1,17 +1,17 @@
 /*
     GLOBAL LUXURY CRUISE LINES (GLCL)
-    Member 2 — Answers
+    Member 2 - Answers
 
     Covers:
     - Q1c : Constraint & Trigger description
     - Q2c : Stored Procedure
-    - Q2d : Queries viii – xiv
+    - Q2d : Queries viii - xiv
 */
 
 USE GLCL_DB;
 
 /* =========================================================
-   Q1c — CONSTRAINT DESCRIPTION
+   Q1c - CONSTRAINT DESCRIPTION
    Constraint: CK_CruiseRoute_RouteType  (CruiseRoute table)
 
    Definition:
@@ -32,7 +32,7 @@ USE GLCL_DB;
              Steps:
              1. Retrieves the ShipID for the booking's voyage.
              2. Retrieves the ShipID of the cabin being added.
-             3. Rejects the insert if the two ShipIDs differ —
+             3. Rejects the insert if the two ShipIDs differ -
                 ensuring a cabin can only be assigned to its
                 own ship's voyage.
              4. Checks whether the cabin already appears in any
@@ -44,27 +44,50 @@ USE GLCL_DB;
    ========================================================= */
 
 /* =========================================================
-   Q2c — STORED PROCEDURE
+   Q2c - STORED PROCEDURE
    sp_SearchAvailableCabins
 
-   Purpose:
-   Returns all unbooked cabins for a given voyage, optionally
-   filtered by cabin category. Including the Adult base fare
-   allows the front-end to display pricing alongside
-   availability in a single call. This avoids two round-trips
-   (one for availability, one for fares) and encapsulates
-   the "not in any active booking" subquery in one reusable
-   location.
+   BUSINESS REQUIREMENT
+   When a customer is choosing a cabin during the booking flow,
+   the system must show every cabin on the ship that is NOT
+   already held by a Pending or Confirmed booking, optionally
+   filtered by cabin category, and display the adult base fare
+   next to each one.
 
-   Usage:
+   WHY A STORED PROCEDURE (vs other approaches)
+   1. vs. writing the SQL inside the application:
+      The "not in any active booking" subquery is easy to get
+      wrong - for example, forgetting to include 'Pending'
+      bookings would let two customers hold the same cabin.
+      Putting it in one SP means every channel (web, mobile,
+      agent desktop) uses the same rule.
+   2. vs. a VIEW:
+      A view cannot accept @VoyageID or the optional
+      @CategoryName filter. We would have to filter outside
+      the view, which prevents the index on VoyageID from
+      being used efficiently.
+   3. vs. a FUNCTION:
+      Functions cannot use SET NOCOUNT ON and cannot THROW on
+      invalid input. They also cannot accept NULL as a
+      "no filter" sentinel as cleanly as an SP can.
+
+   HOW TO USE
        EXEC sp_SearchAvailableCabins @VoyageID = 1, @CategoryName = 'Suite';
-       EXEC sp_SearchAvailableCabins @VoyageID = 2, @CategoryName = NULL;  -- all categories
+       EXEC sp_SearchAvailableCabins @VoyageID = 2, @CategoryName = NULL; -- all categories
+
+   BENEFITS
+   - Availability rule lives in exactly one place
+   - Parameterised => safe from SQL injection
+   - Optional @CategoryName parameter (NULL = all) saves
+     writing two separate procedures
+   - One round trip returns both availability and pricing
    ========================================================= */
 
 IF OBJECT_ID('sp_SearchAvailableCabins', 'P') IS NOT NULL
     DROP PROCEDURE sp_SearchAvailableCabins;
+GO
 
-EXEC(N'CREATE PROCEDURE sp_SearchAvailableCabins
+CREATE PROCEDURE sp_SearchAvailableCabins
     @VoyageID     INT,
     @CategoryName VARCHAR(50) = NULL
 AS
@@ -72,7 +95,7 @@ BEGIN
     SET NOCOUNT ON;
 
     IF NOT EXISTS (SELECT 1 FROM CruiseVoyage WHERE VoyageID = @VoyageID)
-        THROW 50000, ''Voyage not found.'', 1;
+        THROW 50000, 'Voyage not found.', 1;
 
     SELECT
         c.CabinID,
@@ -91,21 +114,21 @@ BEGIN
         AND fr.EffectiveFrom  <= CAST(GETDATE() AS DATE)
         AND (fr.EffectiveTo IS NULL OR fr.EffectiveTo >= CAST(GETDATE() AS DATE))
     LEFT JOIN AgeCategory    ac   ON fr.AgeCategoryID  = ac.AgeCategoryID
-        AND ac.CategoryName = ''Adult''
+        AND ac.CategoryName = 'Adult'
     WHERE (@CategoryName IS NULL OR cc.CategoryName = @CategoryName)
       AND c.CabinID NOT IN (
               SELECT bc.CabinID
               FROM   BookingCabin bc
               INNER JOIN Booking b ON bc.BookingID = b.BookingID
               WHERE  b.VoyageID     = @VoyageID
-                AND  b.BookingStatus IN (''Pending'', ''Confirmed'')
+                AND  b.BookingStatus IN ('Pending', 'Confirmed')
           )
     ORDER BY cc.CategoryName, c.DeckNumber, c.CabinNumber;
 END;
-');
+GO
 
 /* =========================================================
-   Q2d — QUERIES
+   Q2d - QUERIES
    ========================================================= */
 
 -- -------------------------------------------------------
@@ -233,7 +256,7 @@ WHERE s.ShipName = 'GLCL Majesty'
 ORDER BY v.DepartureDateTime, rp.StopSequence, e.ExcursionName;
 
 -- -------------------------------------------------------
--- Query xiv  (additional — own design)
+-- Query xiv  (additional - own design)
 -- Cabin occupancy rate per voyage.
 -- Shows total cabins available on each ship, how many are
 -- booked, and the occupancy percentage. Useful for revenue
