@@ -654,7 +654,3 @@ CREATE TABLE Payment (
         FOREIGN KEY (BookingID) REFERENCES Booking(BookingID)
 );
 
-
-
-DELIMITER $$
-

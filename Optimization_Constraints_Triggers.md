@@ -11,201 +11,57 @@
 
 ---
 
-### Strategy 1 — Composite Indexing on Frequently Joined and Filtered Columns
+### Strategy 1 — Composite Indexing on Trigger-Critical Query Paths
 
-#### Description
+**Prepared by: Member 1**
 
-The most computationally expensive operations in the GLCL database are the booking and reporting queries, which involve multi-table joins across `BookingPassenger`, `Booking`, `CruiseVoyage`, `Cabin`, and `FareRule`. Without indexes on foreign key columns and common filter predicates, MySQL must perform full table scans on every join, which degrades significantly as booking volume grows.
+The primary optimization strategy applied to the GLCL database is the introduction of composite indexes targeted at the query paths executed inside the system's triggers. The rationale for focusing on triggers rather than general reporting queries is that trigger sub-queries fire on every `INSERT` statement — making them the highest-frequency reads in the system. Without purpose-built indexes, each trigger sub-query performs a full table scan, meaning that the cost of a single booking insert scales linearly with the size of the affected tables.
 
-The optimization strategy is to create **composite indexes** on the combinations of columns that are most commonly used together in `WHERE` clauses, `JOIN` conditions, and `ORDER BY` clauses — going beyond the single-column indexes MySQL automatically creates for primary keys.
+The most expensive trigger in the schema is `TR_BookingPassenger_BI_ValidateRules`, which executes multiple sequential queries on `BookingPassenger`, `FareRule`, `Booking`, `CruiseVoyage`, `CruiseShip`, and `CruiseOperator` before each passenger row is committed. The fare lookup alone — which retrieves the applicable `BaseFare` from `FareRule` filtered by `(VoyageID, CabinCategoryID, AgeCategoryID)` and sorted by `EffectiveFrom DESC` — is executed on every booking insert with no index support by default. A composite index on `FareRule (VoyageID, CabinCategoryID, AgeCategoryID, EffectiveFrom DESC)` reduces this from a full table scan to an O(log n) B-tree seek, and because the equality filters narrow the result to at most a few rows per voyage-cabin-age combination, the `ORDER BY ... LIMIT 1` clause is resolved from the index's pre-sorted order without a filesort.
 
-#### Indexes Implemented
+Similarly, the cabin occupancy count (`COUNT(*) WHERE BookingCabinID = ?`) inside the same trigger benefits from a composite index on `BookingPassenger (BookingCabinID, BookingID)`. Without it, every passenger insert scans the entire `BookingPassenger` table to count the 0–5 occupants of a single cabin. The double-booking check in `TR_BookingCabin_BI_PreventDoubleBooking` benefits from an index on `BookingCabin (CabinID, BookingID)`, which allows the `EXISTS` sub-query to seek directly to the relevant cabin's bookings rather than scanning all cabin assignments. For `Booking`, a composite index on `(VoyageID, BookingStatus)` supports both the trigger's voyage-level conflict check and all voyage manifest queries, with `VoyageID` placed first because it has higher selectivity than `BookingStatus` (which has only six distinct values). For the cancellation trigger, an index on `CancellationPolicy (OperatorID, HoursBeforeDeparture ASC)` means the `ORDER BY HoursBeforeDeparture ASC LIMIT 1` policy lookup terminates after reading a single index leaf page rather than sorting the entire policy table.
+
+The trade-off of this strategy is that each additional index increases the overhead of `INSERT`, `UPDATE`, and `DELETE` operations, since the InnoDB engine must update the B-tree structure of every affected index on each write. However, this cost is justified in the GLCL context for two reasons. First, the triggers themselves already introduce read operations on every write — so the write path already pays a read cost, and indexing those reads directly reduces the net transaction cost. Second, a cruise reservation system is inherently read-dominant: each booking, once created, is queried repeatedly for manifests, payment processing, excursion lookups, and cancellation checks, so optimizing reads at the cost of marginally slower writes is the correct priority for this workload.
 
 ```sql
--- 1. FareRule — the most-queried lookup during fare calculation.
---    Queries filter by (VoyageID, CabinCategoryID, AgeCategoryID) and
---    then sort by EffectiveFrom DESC to find the most current rule.
 CREATE INDEX IDX_FareRule_Voyage_Cabin_Age_Date
     ON FareRule (VoyageID, CabinCategoryID, AgeCategoryID, EffectiveFrom DESC);
 
--- 2. BookingPassenger — supports occupancy checks (JOIN + WHERE BookingCabinID)
---    and passenger lookups within a booking (JOIN + WHERE BookingID).
-CREATE INDEX IDX_BookingPassenger_BookingCabin
+CREATE INDEX IDX_BookingPassenger_Cabin_Booking
     ON BookingPassenger (BookingCabinID, BookingID);
 
--- 3. BookingCabin — supports double-booking prevention trigger and
---    voyage-level cabin availability queries.
 CREATE INDEX IDX_BookingCabin_Cabin_Booking
     ON BookingCabin (CabinID, BookingID);
 
--- 4. Booking — supports filtering by VoyageID (voyage manifests)
---    and BookingStatus (active booking queries).
 CREATE INDEX IDX_Booking_Voyage_Status
     ON Booking (VoyageID, BookingStatus);
 
--- 5. CancellationPolicy — used by the cancellation trigger to look up
---    the applicable policy by OperatorID and HoursBeforeDeparture.
 CREATE INDEX IDX_CancellationPolicy_Operator_Hours
     ON CancellationPolicy (OperatorID, HoursBeforeDeparture ASC);
 
--- 6. BaggageRule — used to look up active baggage limits by operator
---    and effective date range.
 CREATE INDEX IDX_BaggageRule_Operator_Date
     ON BaggageRule (OperatorID, EffectiveFrom, EffectiveTo);
-
--- 7. VoyageExcursion — supports excursion availability and slot queries
---    grouped by voyage and route port stop.
-CREATE INDEX IDX_VoyageExcursion_Voyage_RoutePort
-    ON VoyageExcursion (VoyageID, RoutePortID);
-
--- 8. RoutePort — supports route itinerary lookups in stop order.
-CREATE INDEX IDX_RoutePort_Route_Sequence
-    ON RoutePort (RouteID, StopSequence ASC);
 ```
-
-#### Justification
-
-| Index | Why It Is Needed |
-|---|---|
-| `IDX_FareRule_Voyage_Cabin_Age_Date` | The fare calculation trigger runs on every `INSERT` and `UPDATE` to `BookingPassenger`. Without this index, each trigger execution scans the entire `FareRule` table. With it, MySQL resolves the correct fare rule in O(log n) time. |
-| `IDX_BookingPassenger_BookingCabin` | The cabin occupancy check counts passengers per cabin (`WHERE BookingCabinID = X`). Without the index, this is a full scan of `BookingPassenger` per insert. |
-| `IDX_BookingCabin_Cabin_Booking` | The double-booking trigger checks whether a cabin is already booked for the same voyage. This index makes the existence check a fast index seek instead of a full table scan. |
-| `IDX_Booking_Voyage_Status` | Voyage manifest and availability reports filter `Booking` by `VoyageID` and `BookingStatus`. A composite index covering both eliminates two separate single-column scans. |
-| `IDX_CancellationPolicy_Operator_Hours` | The cancellation trigger selects the most applicable policy row with `ORDER BY HoursBeforeDeparture ASC LIMIT 1`. Without an index, MySQL sorts the entire policy table per cancellation. |
-| `IDX_BaggageRule_Operator_Date` | Baggage limit lookups filter on `OperatorID` and a date range. The composite index makes range scans on `EffectiveFrom`/`EffectiveTo` significantly faster. |
-| `IDX_VoyageExcursion_Voyage_RoutePort` | Excursion availability queries group and filter by voyage and port stop. The composite index supports both the filter and the potential sort without a filesort. |
-| `IDX_RoutePort_Route_Sequence` | Itinerary display queries retrieve all stops for a route in stop sequence order. The index makes both the filter (`RouteID`) and the sort (`StopSequence`) index-covered operations. |
-
-#### Trade-Off Acknowledgement
-
-Indexes increase storage space and add a small overhead to `INSERT`, `UPDATE`, and `DELETE` operations because the index structure must be maintained. In the GLCL context, this trade-off is justified because:
-
-1. **Read operations vastly outnumber writes.** A booking system is queried for availability, fares, manifests, and reports far more frequently than records are inserted or updated.
-2. **Triggers already perform reads on every write.** The fare calculation and double-booking triggers read `FareRule`, `BookingPassenger`, and `Booking` on every insert. These reads benefit the most from indexing.
-3. **Academic data volumes are small**, but the indexing strategy correctly anticipates real-world scaling where these tables can grow to millions of rows.
 
 ---
 
-### Strategy 2 — Selective Denormalization with Justification (Historical Price Snapshot)
+### Strategy 2 — Selective Denormalization for Historical Price Preservation
 
-#### Description
+**Prepared by: Member 2**
 
-In the `PassengerSpecialService` table, a `Fee` column was removed during 3NF normalization because it was deemed transitively dependent on `ServiceID → SpecialService.Fee`. However, a deliberate **selective denormalization** is justified for auditing and legal purposes: the fee that was actually applied to a passenger at the time of their service request should be recorded independently of any future changes to `SpecialService.Fee`.
+The second optimization strategy is the deliberate and documented selective denormalization of the `PassengerSpecialService` table. In a strictly normalized 3NF design, `PassengerSpecialService` would store only a foreign key to `SpecialService` and derive the applicable fee by joining to `SpecialService.Fee` at query time. However, this approach is incorrect for financial audit purposes: `SpecialService.Fee` represents the *current* price of a service, which may be updated over time. A passenger who booked a service at a specific fee must have that exact amount preserved permanently in their booking record, regardless of any subsequent price changes. Storing only the foreign key means that historical booking reports will silently show the wrong fee — whichever value `SpecialService.Fee` holds at the time the report is run rather than at the time the booking was made.
 
-This is the distinction between *current price* (stored in `SpecialService`) and *applied price at the time of booking* (which must be captured as an independent fact for financial audit trails).
-
-#### Implementation
-
-```sql
--- Re-introduce AppliedFee as a documented, justified denormalization
--- It is NOT a redundant copy — it captures a point-in-time historical fact.
-ALTER TABLE PassengerSpecialService
-    ADD COLUMN AppliedFee DECIMAL(10,2) NOT NULL DEFAULT 0
-        COMMENT 'Fee charged at the time of the service request. 
-                 Retained independently of SpecialService.Fee 
-                 for audit trail and financial reporting purposes. 
-                 Justified denormalization: historical price snapshot.';
-```
-
-A trigger populates `AppliedFee` automatically from `SpecialService.Fee` at the moment of booking:
-
-```sql
-DELIMITER $$
-CREATE TRIGGER TR_PassengerSpecialService_BI_SetAppliedFee
-BEFORE INSERT ON PassengerSpecialService
-FOR EACH ROW
-BEGIN
-    SELECT COALESCE(Fee, 0)
-    INTO   NEW.AppliedFee
-    FROM   SpecialService
-    WHERE  ServiceID = NEW.ServiceID;
-END$$
-DELIMITER ;
-```
-
-#### Justification
-
-| Concern | Explanation |
-|---|---|
-| **Why denormalize?** | Financial systems must preserve the exact amount charged to a customer at the time of transaction. `SpecialService.Fee` is a current price list — it may change. Recording only the FK means historical booking reports will show incorrect (current) fees instead of the fee actually paid. |
-| **Why is this not a 3NF violation?** | A pure 3NF copy of `SpecialService.Fee` would always mirror the current value. `AppliedFee` is a different fact — the fee at a specific point in time — making it functionally dependent on `PassengerServiceID` (the event record), not solely on `ServiceID`. The two attributes describe different things. |
-| **Is this justified in the assignment context?** | Yes. The assignment states: *"Data must be in 3NF or higher unless it has been denormalized for performance reasons, in which case a detailed explanation must be given."* Audit trail preservation is a stronger justification than performance alone. |
-| **Precedent in the original schema** | The original schema's `CancellationPolicy`-triggered `PenaltyAmount` and `RefundAmount` in `BookingCancellation` follow the same pattern — computed and stored at event time for historical accuracy, not re-derived dynamically. This strategy is consistent with that design decision. |
+The denormalization introduces an `AppliedFee` column in `PassengerSpecialService` that records the fee at the moment of booking. This column is automatically populated by a BEFORE INSERT trigger that reads `SpecialService.Fee` at insert time and writes it into `NEW.AppliedFee`, ensuring the value is captured once and never altered by subsequent changes to the price list. This is not a violation of 3NF in the meaningful sense: `AppliedFee` is not a redundant copy of `SpecialService.Fee` — it is a different fact, describing the fee charged at a specific point in time, which is functionally dependent on the booking event (`PassengerServiceID`) rather than solely on `ServiceID`. The assignment explicitly permits denormalization where a detailed explanation is provided, and this case satisfies that requirement. The same design pattern is already present in the original schema, where `BookingCancellation.PenaltyAmount` and `RefundAmount` are computed at cancellation time and stored independently rather than being re-derived from `CancellationPolicy` on each query.
 
 ---
 
-### Strategy 3 — Use of Reporting Views to Avoid Repeated Complex Joins
+### Strategy 3 — Reporting Views to Encapsulate Repeated Join Paths
 
-#### Description
+**Prepared by: Member 3**
 
-The GLCL schema involves deep join chains that are repeatedly needed across different queries (e.g., `BookingPassenger → Booking → CruiseVoyage → CruiseShip → CruiseOperator`). Repeating these joins in ad-hoc queries is error-prone and inefficient. The strategy is to encapsulate frequently needed join paths into **named views**, which both optimize development time and allow MySQL's query optimizer to apply caching and materialization strategies.
+The third optimization strategy is the creation of named views to encapsulate the deep join chains that appear repeatedly across different queries in the GLCL schema. The most common such chain traverses `BookingPassenger → BookingCabin → Cabin → CabinCategory → Booking → CruiseVoyage → CruiseRoute → CruiseShip → CruiseOperator → Passenger → AgeCategory` — a ten-table join that is required for reservation manifests, passenger age reports, and revenue breakdowns. Without views, each developer writing an ad-hoc query must reconstruct this join path from scratch, creating risk of missing join conditions, incorrect alias usage, or inadvertent Cartesian products that silently return incorrect results.
 
-#### Views Implemented
-
-```sql
--- Full passenger booking detail (used in reservation reports and manifests)
-CREATE VIEW vw_BookingPassengerDetails AS
-SELECT
-    b.BookingID,
-    b.BookingDate,
-    b.BookingStatus,
-    v.VoyageID,
-    r.RouteName,
-    r.RouteType,
-    s.ShipName,
-    co.OperatorName,
-    c.CabinNumber,
-    cc.CategoryName                                                 AS CabinCategory,
-    p.PassengerID,
-    p.FullName,
-    p.PassportNo,
-    fn_CalculateAge(p.DateOfBirth, DATE(v.DepartureDateTime))       AS AgeAtDeparture,
-    ac.CategoryName                                                 AS AgeCategory,
-    bp.InfantBedOption,
-    bp.IsChaperonedYouth
-FROM BookingPassenger  bp
-JOIN Booking           b   ON bp.BookingID      = b.BookingID
-JOIN CruiseVoyage      v   ON b.VoyageID        = v.VoyageID
-JOIN CruiseRoute       r   ON v.RouteID         = r.RouteID
-JOIN CruiseShip        s   ON v.ShipID          = s.ShipID
-JOIN CruiseOperator    co  ON s.OperatorID      = co.OperatorID
-JOIN BookingCabin      bc  ON bp.BookingCabinID = bc.BookingCabinID
-JOIN Cabin             c   ON bc.CabinID        = c.CabinID
-JOIN CabinCategory     cc  ON c.CabinCategoryID = cc.CabinCategoryID
-JOIN Passenger         p   ON bp.PassengerID    = p.PassengerID
-JOIN AgeCategory       ac  ON bp.AgeCategoryID  = ac.AgeCategoryID;
-
--- Cabin availability per voyage
-CREATE VIEW vw_VoyageCabinAvailability AS
-SELECT
-    v.VoyageID,
-    s.ShipName,
-    r.RouteName,
-    c.CabinID,
-    c.CabinNumber,
-    cc.CategoryName AS CabinCategory,
-    c.MaxOccupancy,
-    CASE
-        WHEN EXISTS (
-            SELECT 1
-            FROM BookingCabin bc
-            JOIN Booking b2 ON bc.BookingID = b2.BookingID
-            WHERE b2.VoyageID = v.VoyageID
-              AND bc.CabinID  = c.CabinID
-              AND b2.BookingStatus IN ('Pending', 'Confirmed')
-        ) THEN 'Booked'
-        ELSE 'Available'
-    END AS AvailabilityStatus
-FROM CruiseVoyage   v
-JOIN CruiseShip     s  ON v.ShipID          = s.ShipID
-JOIN CruiseRoute    r  ON v.RouteID         = r.RouteID
-JOIN Cabin          c  ON s.ShipID          = c.ShipID
-JOIN CabinCategory  cc ON c.CabinCategoryID = cc.CabinCategoryID;
-```
-
-#### Justification
-
-Views encapsulate complexity without materializing data. Every query that uses `vw_BookingPassengerDetails` benefits from a single, tested, optimized join path rather than each developer writing their own. MySQL's optimizer treats views as subquery definitions and can apply index usage, predicate pushdown, and join reordering automatically. This reduces both development effort and the risk of cartesian products or missing join conditions in ad-hoc queries.
+Two views are introduced: `vw_BookingPassengerDetails`, which exposes the full passenger booking detail join path as a single queryable object including the passenger's computed age at departure using `fn_CalculateAge`, and `vw_VoyageCabinAvailability`, which surfaces cabin availability status per voyage without requiring callers to understand the double-booking logic. MySQL's query optimizer treats views as inline subquery definitions rather than materializing them, meaning it can apply predicate pushdown — pushing `WHERE` filters from the outer query into the view's join — and can use the indexes created under Strategy 1 to resolve the view's joins efficiently. This means the views add no storage overhead and impose no performance penalty compared to writing the joins directly, while significantly reducing the complexity and error surface of reporting queries.
 
 ---
 

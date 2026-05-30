@@ -13,41 +13,20 @@ USE GLCL_DB;
 
 /* =========================================================
    Q1b — OPTIMIZATION STRATEGY
-   Member 3 Strategy: Index cancellation, excursion, and
-   special-service tables to support operational queries on
-   cancellations, wheelchair requests, and excursion sales.
+   Member 3 Strategy: Reporting views to encapsulate repeated
+   deep join chains across the GLCL schema.
 
-   Justification:
-   Queries xvii and xix both require finding records that are
-   absent (excursions with no sales) or aggregated across
-   operators (wheelchair passengers). Without indexes, these
-   require full scans of BookingExcursion and
-   PassengerSpecialService respectively, which grow linearly
-   with bookings. Indexing BookingExcursion.VoyageExcursionID
-   allows the NOT IN subquery in query xvii to resolve in
-   O(log n). Indexing PassengerSpecialService.ServiceID
-   accelerates the ServiceType join in query xix.
-   BookingCancellation.BookingID is indexed to speed up
-   cancellation lookups and the penalty trigger joins.
+   vw_BookingPassengerDetails exposes the full passenger booking
+   detail join path (10 tables) as a single queryable object,
+   including the passenger's computed age at departure.
+   vw_VoyageCabinAvailability surfaces cabin availability status
+   per voyage without callers needing to understand the
+   double-booking logic.
+   MySQL's optimizer applies predicate pushdown and uses
+   existing indexes through the view, so no storage overhead
+   is added.
+   Full justification: see Optimization_Constraints_Triggers.md
    ========================================================= */
-
-CREATE INDEX IDX_BookingExcursion_VoyageExcursionID
-    ON BookingExcursion (VoyageExcursionID);
-
-CREATE INDEX IDX_BookingExcursion_PassengerID
-    ON BookingExcursion (BookingPassengerID);
-
-CREATE INDEX IDX_PassengerSpecialService_ServiceID
-    ON PassengerSpecialService (ServiceID);
-
-CREATE INDEX IDX_PassengerSpecialService_PassengerID
-    ON PassengerSpecialService (BookingPassengerID);
-
-CREATE INDEX IDX_BookingCancellation_BookingID
-    ON BookingCancellation (BookingID);
-
-CREATE INDEX IDX_Booking_CustomerPassengerID
-    ON Booking (CustomerPassengerID);
 
 /* =========================================================
    Q1c — CONSTRAINT DESCRIPTION

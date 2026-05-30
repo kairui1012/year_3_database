@@ -1128,3 +1128,45 @@ VALUES
 (16, '2026-08-01 10:45:00',  9600.00, 'Debit Card',    'Paid', 'TXN-20260801-016');
 
 SELECT 'Additional sample data loaded successfully.' AS Message;
+
+/* ============================================================
+   SECTION 13: EXTRA VOYAGE — GLCL PEARL ON MULTI-DESTINATION
+   Adds VoyageID=6 for GLCL Pearl (ShipID=2) on Route 3 so that
+   Query vi returns count=3 for Global Luxury Cruise Lines.
+   ============================================================ */
+
+-- VoyageID=6: GLCL Pearl, Island Hopper (Route 3), 8-day, Scheduled 2026-12-01
+INSERT INTO CruiseVoyage (ShipID, RouteID, DepartureDateTime, ArrivalDateTime, BaggageWeightLimitKG, VoyageStatus)
+VALUES
+(2, 3, '2026-12-01 17:00:00', '2026-12-09 09:00:00', 30.00, 'Scheduled');  -- VoyageID=6
+
+-- All-inclusive meal package (2+ days → MealPackageRuleID=2)
+INSERT INTO VoyageMealPackage (VoyageID, MealPackageRuleID)
+VALUES (6, 2);
+
+-- Fare rules for Voyage 6 (FareRuleID 81–96)
+-- AgeCategoryID: 2=Child  3=Teen  4=Adult  5=Senior
+INSERT INTO FareRule (VoyageID, CabinCategoryID, AgeCategoryID, BaseFare, EffectiveFrom, EffectiveTo)
+VALUES
+-- V6 Interior (Cat 1)
+(6, 1, 2, 1200.00, '2026-01-01', NULL),   -- FareRuleID=81
+(6, 1, 3, 1500.00, '2026-01-01', NULL),   -- FareRuleID=82
+(6, 1, 4, 2000.00, '2026-01-01', NULL),   -- FareRuleID=83
+(6, 1, 5, 1750.00, '2026-01-01', NULL),   -- FareRuleID=84
+-- V6 Ocean View (Cat 2)
+(6, 2, 2, 1600.00, '2026-01-01', NULL),   -- FareRuleID=85
+(6, 2, 3, 2000.00, '2026-01-01', NULL),   -- FareRuleID=86
+(6, 2, 4, 2700.00, '2026-01-01', NULL),   -- FareRuleID=87
+(6, 2, 5, 2400.00, '2026-01-01', NULL),   -- FareRuleID=88
+-- V6 Balcony (Cat 3)
+(6, 3, 2, 1800.00, '2026-01-01', NULL),   -- FareRuleID=89
+(6, 3, 3, 2300.00, '2026-01-01', NULL),   -- FareRuleID=90
+(6, 3, 4, 3200.00, '2026-01-01', NULL),   -- FareRuleID=91
+(6, 3, 5, 2800.00, '2026-01-01', NULL),   -- FareRuleID=92
+-- V6 Suite (Cat 4)
+(6, 4, 2, 3000.00, '2026-01-01', NULL),   -- FareRuleID=93
+(6, 4, 3, 3800.00, '2026-01-01', NULL),   -- FareRuleID=94
+(6, 4, 4, 5200.00, '2026-01-01', NULL),   -- FareRuleID=95
+(6, 4, 5, 4600.00, '2026-01-01', NULL);   -- FareRuleID=96
+
+SELECT 'Voyage 6 (GLCL Pearl, Multi-destination) loaded successfully.' AS Message;

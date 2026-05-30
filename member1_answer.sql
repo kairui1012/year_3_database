@@ -13,39 +13,45 @@ USE GLCL_DB;
 
 /* =========================================================
    Q1b — OPTIMIZATION STRATEGY
-   Member 1 Strategy: Index frequently-joined and filtered columns
-   on the core booking path (Booking → CruiseVoyage → CruiseShip).
+   Member 1 Strategy: Composite indexes targeting the query paths
+   executed inside the system's triggers, particularly
+   TR_BookingPassenger_BI_ValidateRules (7 sub-queries per INSERT)
+   and TR_BookingCabin_BI_PreventDoubleBooking.
 
-   Justification:
-   Almost every business query travels: Booking → VoyageID →
-   CruiseVoyage → ShipID → CruiseShip → OperatorID → CruiseOperator.
-   Without indexes MySQL performs full table scans on large tables.
-   Adding composite indexes on the foreign-key + filter columns
-   used in WHERE and JOIN clauses collapses O(n) scans to O(log n)
-   B-tree lookups, dramatically improving response time for booking
-   and revenue reports especially as row counts grow.
+   Run AFTER seed data is loaded so MySQL builds each index
+   in a single pass over the existing rows rather than updating
+   it incrementally on every INSERT.
    ========================================================= */
 
-CREATE INDEX IDX_Booking_VoyageID
-    ON Booking (VoyageID);
+-- Fare lookup: filters (VoyageID, CabinCategoryID, AgeCategoryID),
+-- sorts EffectiveFrom DESC LIMIT 1. Without this, the fare trigger
+-- performs a full scan of FareRule on every passenger insert.
+CREATE INDEX IDX_FareRule_Voyage_Cabin_Age_Date
+    ON FareRule (VoyageID, CabinCategoryID, AgeCategoryID, EffectiveFrom DESC);
 
-CREATE INDEX IDX_Booking_Status_VoyageID
-    ON Booking (BookingStatus, VoyageID);
+-- Occupancy count: COUNT(*) WHERE BookingCabinID = ? fires on every
+-- BookingPassenger insert. Also supports the booking ownership check.
+CREATE INDEX IDX_BookingPassenger_Cabin_Booking
+    ON BookingPassenger (BookingCabinID, BookingID);
 
-CREATE INDEX IDX_BookingPassenger_BookingID
-    ON BookingPassenger (BookingID);
+-- Double-booking EXISTS check: seeks by CabinID, then uses BookingID
+-- to join Booking without returning to the clustered row.
+CREATE INDEX IDX_BookingCabin_Cabin_Booking
+    ON BookingCabin (CabinID, BookingID);
 
-CREATE INDEX IDX_BookingPassenger_PassengerID
-    ON BookingPassenger (PassengerID);
+-- Voyage manifest and conflict checks: VoyageID first (high selectivity),
+-- BookingStatus second (6 distinct values, low selectivity).
+CREATE INDEX IDX_Booking_Voyage_Status
+    ON Booking (VoyageID, BookingStatus);
 
-CREATE INDEX IDX_CruiseVoyage_ShipID_Departure
-    ON CruiseVoyage (ShipID, DepartureDateTime);
+-- Cancellation trigger: ORDER BY HoursBeforeDeparture ASC LIMIT 1
+-- per operator. Index pre-sorts the range, eliminating filesort.
+CREATE INDEX IDX_CancellationPolicy_Operator_Hours
+    ON CancellationPolicy (OperatorID, HoursBeforeDeparture ASC);
 
-CREATE INDEX IDX_RoutePort_RouteID_Seq
-    ON RoutePort (RouteID, StopSequence);
-
-CREATE INDEX IDX_FareRule_Voyage_Category
-    ON FareRule (VoyageID, CabinCategoryID, AgeCategoryID);
+-- Baggage limit lookup: filters OperatorID + date range on EffectiveFrom/EffectiveTo.
+CREATE INDEX IDX_BaggageRule_Operator_Date
+    ON BaggageRule (OperatorID, EffectiveFrom, EffectiveTo);
 
 /* =========================================================
    Q1c — CONSTRAINT DESCRIPTION

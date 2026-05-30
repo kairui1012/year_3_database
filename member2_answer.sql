@@ -13,40 +13,18 @@ USE GLCL_DB;
 
 /* =========================================================
    Q1b — OPTIMIZATION STRATEGY
-   Member 2 Strategy: Index fare-lookup, port-filtering, and
-   dining columns that are hit repeatedly in revenue and
-   voyage-search queries.
+   Member 2 Strategy: Selective denormalization for historical
+   price preservation in PassengerSpecialService.
 
-   Justification:
-   Queries viii and ix both filter on CabinCategory and Port,
-   which are look-up values that do not change. A composite
-   index on FareRule (VoyageID, CabinCategoryID) means the
-   database resolves fare lookups in a single index scan instead
-   of a full table scan. Indexing RoutePort.PortID lets the
-   port-destination filter in query ix skip irrelevant rows
-   immediately. The ShipSpecialtyDining index supports query x,
-   which joins on ShipID and is executed per-ship. All indexes
-   are read-only structures that add negligible write overhead
-   given the low insert rate on these reference tables.
+   The AppliedFee column records the fee charged to a passenger
+   at the time of their service request, independently of any
+   future changes to SpecialService.Fee. This is not a 3NF
+   violation — AppliedFee captures a point-in-time fact
+   functionally dependent on the booking event, not on ServiceID.
+   A BEFORE INSERT trigger populates it automatically from
+   SpecialService.Fee at insert time.
+   Full justification: see Optimization_Constraints_Triggers.md
    ========================================================= */
-
-CREATE INDEX IDX_FareRule_VoyageID_CabinCat
-    ON FareRule (VoyageID, CabinCategoryID);
-
-CREATE INDEX IDX_RoutePort_PortID
-    ON RoutePort (PortID);
-
-CREATE INDEX IDX_ShipSpecialtyDining_ShipID
-    ON ShipSpecialtyDining (ShipID);
-
-CREATE INDEX IDX_CruiseVoyage_RouteID
-    ON CruiseVoyage (RouteID);
-
-CREATE INDEX IDX_BookingCabin_CabinID
-    ON BookingCabin (CabinID);
-
-CREATE INDEX IDX_CruiseShip_OperatorID
-    ON CruiseShip (OperatorID);
 
 /* =========================================================
    Q1c — CONSTRAINT DESCRIPTION
