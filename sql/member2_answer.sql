@@ -3,28 +3,12 @@
     Member 2 — Answers
 
     Covers:
-    - Q1b : Optimization Strategy (indexes + justification)
     - Q1c : Constraint & Trigger description
     - Q2c : Stored Procedure
     - Q2d : Queries viii – xiv
 */
 
 USE GLCL_DB;
-
-/* =========================================================
-   Q1b — OPTIMIZATION STRATEGY
-   Member 2 Strategy: Selective denormalization for historical
-   price preservation in PassengerSpecialService.
-
-   The AppliedFee column records the fee charged to a passenger
-   at the time of their service request, independently of any
-   future changes to SpecialService.Fee. This is not a 3NF
-   violation — AppliedFee captures a point-in-time fact
-   functionally dependent on the booking event, not on ServiceID.
-   A BEFORE INSERT trigger populates it automatically from
-   SpecialService.Fee at insert time.
-   Full justification: see Optimization_Constraints_Triggers.md
-   ========================================================= */
 
 /* =========================================================
    Q1c — CONSTRAINT DESCRIPTION
@@ -101,7 +85,6 @@ BEGIN
     INNER JOIN CruiseVoyage  v    ON v.VoyageID       = p_VoyageID
         AND v.ShipID = c.ShipID
     INNER JOIN CabinCategory cc   ON c.CabinCategoryID = cc.CabinCategoryID
-    -- Fetch the current Adult fare for display purposes
     LEFT JOIN FareRule       fr   ON fr.VoyageID       = p_VoyageID
         AND fr.CabinCategoryID = c.CabinCategoryID
         AND fr.EffectiveFrom  <= CURDATE()
@@ -262,9 +245,8 @@ SELECT
     v.DepartureDateTime,
     COUNT(DISTINCT c.CabinID)                               AS TotalCabinsOnShip,
     COUNT(DISTINCT CASE WHEN b.BookingID IS NOT NULL THEN c.CabinID END) AS BookedCabins,
-        COUNT(DISTINCT c.CabinID)
+    COUNT(DISTINCT c.CabinID)
         - COUNT(DISTINCT CASE WHEN b.BookingID IS NOT NULL THEN c.CabinID END) AS AvailableCabins,
-        
     ROUND(
         COUNT(DISTINCT CASE WHEN b.BookingID IS NOT NULL THEN c.CabinID END) * 100.0
         / NULLIF(COUNT(DISTINCT c.CabinID), 0)

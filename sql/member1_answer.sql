@@ -3,55 +3,12 @@
     Member 1 — Answers
 
     Covers:
-    - Q1b : Optimization Strategy (indexes + justification)
     - Q1c : Constraint & Trigger description
     - Q2c : Stored Procedure
     - Q2d : Queries i – vii
 */
 
 USE GLCL_DB;
-
-/* =========================================================
-   Q1b — OPTIMIZATION STRATEGY
-   Member 1 Strategy: Composite indexes targeting the query paths
-   executed inside the system's triggers, particularly
-   TR_BookingPassenger_BI_ValidateRules (7 sub-queries per INSERT)
-   and TR_BookingCabin_BI_PreventDoubleBooking.
-
-   Run AFTER seed data is loaded so MySQL builds each index
-   in a single pass over the existing rows rather than updating
-   it incrementally on every INSERT.
-   ========================================================= */
-
--- Fare lookup: filters (VoyageID, CabinCategoryID, AgeCategoryID),
--- sorts EffectiveFrom DESC LIMIT 1. Without this, the fare trigger
--- performs a full scan of FareRule on every passenger insert.
-CREATE INDEX IDX_FareRule_Voyage_Cabin_Age_Date
-    ON FareRule (VoyageID, CabinCategoryID, AgeCategoryID, EffectiveFrom DESC);
-
--- Occupancy count: COUNT(*) WHERE BookingCabinID = ? fires on every
--- BookingPassenger insert. Also supports the booking ownership check.
-CREATE INDEX IDX_BookingPassenger_Cabin_Booking
-    ON BookingPassenger (BookingCabinID, BookingID);
-
--- Double-booking EXISTS check: seeks by CabinID, then uses BookingID
--- to join Booking without returning to the clustered row.
-CREATE INDEX IDX_BookingCabin_Cabin_Booking
-    ON BookingCabin (CabinID, BookingID);
-
--- Voyage manifest and conflict checks: VoyageID first (high selectivity),
--- BookingStatus second (6 distinct values, low selectivity).
-CREATE INDEX IDX_Booking_Voyage_Status
-    ON Booking (VoyageID, BookingStatus);
-
--- Cancellation trigger: ORDER BY HoursBeforeDeparture ASC LIMIT 1
--- per operator. Index pre-sorts the range, eliminating filesort.
-CREATE INDEX IDX_CancellationPolicy_Operator_Hours
-    ON CancellationPolicy (OperatorID, HoursBeforeDeparture ASC);
-
--- Baggage limit lookup: filters OperatorID + date range on EffectiveFrom/EffectiveTo.
-CREATE INDEX IDX_BaggageRule_Operator_Date
-    ON BaggageRule (OperatorID, EffectiveFrom, EffectiveTo);
 
 /* =========================================================
    Q1c — CONSTRAINT DESCRIPTION
@@ -156,7 +113,6 @@ DELIMITER ;
 -- (For round-trips the departure and arrival port are the
 --  same home port; we filter on first stop = last stop.)
 -- -------------------------------------------------------
--- Round-trip sailings only
 SELECT
     v.VoyageID,
     r.RouteName,
@@ -168,10 +124,10 @@ FROM CruiseVoyage v
 INNER JOIN CruiseRoute r ON v.RouteID = r.RouteID
 
 -- First port (departure)
-INNER JOIN RoutePort rp_dep 
-    ON r.RouteID = rp_dep.RouteID 
+INNER JOIN RoutePort rp_dep
+    ON r.RouteID = rp_dep.RouteID
    AND rp_dep.StopSequence = 1
-INNER JOIN Port p_dep 
+INNER JOIN Port p_dep
     ON rp_dep.PortID = p_dep.PortID
 
 -- Last port (arrival)
@@ -179,17 +135,17 @@ INNER JOIN (
     SELECT RouteID, MAX(StopSequence) AS LastSeq
     FROM RoutePort
     GROUP BY RouteID
-) last_seq 
+) last_seq
     ON r.RouteID = last_seq.RouteID
 
-INNER JOIN RoutePort rp_arr 
-    ON r.RouteID = rp_arr.RouteID 
+INNER JOIN RoutePort rp_arr
+    ON r.RouteID = rp_arr.RouteID
    AND rp_arr.StopSequence = last_seq.LastSeq
-INNER JOIN Port p_arr 
+INNER JOIN Port p_arr
     ON rp_arr.PortID = p_arr.PortID
 
 WHERE p_dep.PortID = p_arr.PortID
-  AND DATE(v.DepartureDateTime) 
+  AND DATE(v.DepartureDateTime)
       BETWEEN '2026-01-01' AND '2026-12-31'
 ORDER BY v.DepartureDateTime;
 

@@ -3,30 +3,12 @@
     Member 3 — Answers
 
     Covers:
-    - Q1b : Optimization Strategy (indexes + justification)
     - Q1c : Constraint & Trigger description
     - Q2c : Stored Procedure
     - Q2d : Queries xv – xxi
 */
 
 USE GLCL_DB;
-
-/* =========================================================
-   Q1b — OPTIMIZATION STRATEGY
-   Member 3 Strategy: Reporting views to encapsulate repeated
-   deep join chains across the GLCL schema.
-
-   vw_BookingPassengerDetails exposes the full passenger booking
-   detail join path (10 tables) as a single queryable object,
-   including the passenger's computed age at departure.
-   vw_VoyageCabinAvailability surfaces cabin availability status
-   per voyage without callers needing to understand the
-   double-booking logic.
-   MySQL's optimizer applies predicate pushdown and uses
-   existing indexes through the view, so no storage overhead
-   is added.
-   Full justification: see Optimization_Constraints_Triggers.md
-   ========================================================= */
 
 /* =========================================================
    Q1c — CONSTRAINT DESCRIPTION

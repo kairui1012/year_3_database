@@ -51,7 +51,21 @@ CREATE INDEX IDX_BaggageRule_Operator_Date
 
 The second optimization strategy is the deliberate and documented selective denormalization of the `PassengerSpecialService` table. In a strictly normalized 3NF design, `PassengerSpecialService` would store only a foreign key to `SpecialService` and derive the applicable fee by joining to `SpecialService.Fee` at query time. However, this approach is incorrect for financial audit purposes: `SpecialService.Fee` represents the *current* price of a service, which may be updated over time. A passenger who booked a service at a specific fee must have that exact amount preserved permanently in their booking record, regardless of any subsequent price changes. Storing only the foreign key means that historical booking reports will silently show the wrong fee — whichever value `SpecialService.Fee` holds at the time the report is run rather than at the time the booking was made.
 
-The denormalization introduces an `AppliedFee` column in `PassengerSpecialService` that records the fee at the moment of booking. This column is automatically populated by a BEFORE INSERT trigger that reads `SpecialService.Fee` at insert time and writes it into `NEW.AppliedFee`, ensuring the value is captured once and never altered by subsequent changes to the price list. This is not a violation of 3NF in the meaningful sense: `AppliedFee` is not a redundant copy of `SpecialService.Fee` — it is a different fact, describing the fee charged at a specific point in time, which is functionally dependent on the booking event (`PassengerServiceID`) rather than solely on `ServiceID`. The assignment explicitly permits denormalization where a detailed explanation is provided, and this case satisfies that requirement. The same design pattern is already present in the original schema, where `BookingCancellation.PenaltyAmount` and `RefundAmount` are computed at cancellation time and stored independently rather than being re-derived from `CancellationPolicy` on each query.
+The denormalization stores the fee in `PassengerSpecialService.Fee` as a snapshot of the catalogue price at the moment of booking. This column is automatically populated by the BEFORE INSERT trigger `TR_PassengerSpecialService_BI_SnapFee`, which reads `SpecialService.Fee` at insert time and writes it into `NEW.Fee`, ensuring the value is captured once and is never overwritten by future catalogue changes. A `NOT FOUND` guard in the trigger raises an error if the referenced service does not exist, preventing silent NULL writes. This is not a violation of 3NF in the meaningful sense: `Fee` in `PassengerSpecialService` describes the fee charged in a specific booking event (functionally dependent on `PassengerServiceID`), which is a different fact from the current catalogue rate (`SpecialService.Fee`). The assignment explicitly permits denormalization where a detailed explanation is provided, and this case satisfies that requirement. The same design pattern is already present in the original schema: `BookingCancellation.PenaltyAmount` and `RefundAmount` are computed at cancellation time and stored independently rather than being re-derived from `CancellationPolicy` on each query, for exactly the same audit-correctness reason.
+
+```sql
+CREATE TRIGGER TR_PassengerSpecialService_BI_SnapFee
+BEFORE INSERT ON PassengerSpecialService
+FOR EACH ROW
+BEGIN
+    DECLARE v_CurrentFee DECIMAL(10,2);
+    SELECT Fee INTO v_CurrentFee FROM SpecialService WHERE ServiceID = NEW.ServiceID;
+    IF v_CurrentFee IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Referenced SpecialService not found.';
+    END IF;
+    SET NEW.Fee = v_CurrentFee;
+END
+```
 
 ---
 
